@@ -1,23 +1,12 @@
+use std::collections::HashMap;
+
+use egui::{epaint::ahash::HashSet, plot::Plot, Ui};
+use osmpbfreader::{OsmObj, OsmPbfReader};
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
+
 pub struct TemplateApp {
-    // Example stuff:
-    label: String,
-
-    // this how you opt-out of serialization of a member
-    #[serde(skip)]
-    value: f32,
-}
-
-impl Default for TemplateApp {
-    fn default() -> Self {
-        Self {
-            // Example stuff:
-            label: "Open Map!".to_owned(),
-            value: 2.7,
-        }
-    }
+    nodes: Vec<Path>,
 }
 
 impl TemplateApp {
@@ -26,26 +15,29 @@ impl TemplateApp {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-        }
+        // // Load previous app state (if any).
+        // // Note that you must enable the `persistence` feature for this to work.
+        // if let Some(storage) = cc.storage {
+        //     return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+        // }
 
-        Default::default()
+        // Default::default()
+        Self {
+            nodes: read_nodes_from_file(),
+        }
     }
 }
 
 impl eframe::App for TemplateApp {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
+        // eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let Self { label, value } = self;
+        let Self { nodes } = self;
 
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
@@ -66,27 +58,13 @@ impl eframe::App for TemplateApp {
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.heading("Map options");
-
-            ui.horizontal(|ui| {
-                ui.label("Search: ");
-                ui.text_edit_singleline(label);
-            });
-
-            ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
-            if ui.button("Zoom in").clicked() {
-                *value += 1.0;
-            }
-
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.label("Created by ");
                     ui.hyperlink_to("Sorseg", "https://github.com/samoylovfp");
                     ui.label(" and ");
-                    ui.hyperlink_to(
-                        "Demoth",
-                        "https://demoth.dev",
-                    );
+                    ui.hyperlink_to("Demoth", "https://demoth.dev");
                     ui.label(".");
                 });
             });
@@ -94,23 +72,83 @@ impl eframe::App for TemplateApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
-
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
+            draw_line(nodes, ui);
             egui::warn_if_debug_build(ui);
         });
-
-        if false {
-            egui::Window::new("Window").show(ctx, |ui| {
-                ui.label("Windows can be moved by dragging them.");
-                ui.label("They are automatically sized based on contents.");
-                ui.label("You can turn on resizing and scrolling if you like.");
-                ui.label("You would normally choose either panels OR windows.");
-            });
-        }
     }
+}
+
+fn draw_line(nodes: &[Path], ui: &mut Ui) {
+    use egui::plot::{Line, PlotPoints};
+    // let n = 128;
+    // let line_points: PlotPoints = (0..=n)
+    //     .map(|i| {
+    //         use std::f64::consts::TAU;
+    //         let x = egui::remap(i as f64, 0.0..=n as f64, -TAU..=TAU);
+    //         [x, x.sin()]
+    //     })
+    //     .collect();
+
+    let beninging = nodes[0].points[0];
+
+    let lines: Vec<_> = nodes
+        .iter()
+        .map(|p| {
+            Line::new(PlotPoints::new(
+                p.points
+                    .iter()
+                    .map(|(x, y)| [(beninging.0 - *x) as f64, (beninging.1 - *y) as f64])
+                    .collect(),
+            ))
+        })
+        .collect();
+
+    // Line::new(line_points);
+    egui::plot::Plot::new("example_plot")
+        .data_aspect(1.0)
+        .show(ui, |plot_ui| {
+            lines.into_iter().for_each(|l| plot_ui.line(l))
+        });
+}
+
+#[derive(Debug)]
+struct Path {
+    points: Vec<(i32, i32)>,
+}
+
+fn read_nodes_from_file() -> Vec<Path> {
+    let mut reader = OsmPbfReader::new(std::fs::File::open("uusima.pbf").unwrap());
+
+    let ways: Vec<_> = reader
+        .iter()
+        .filter_map(|o| o.ok())
+        .filter(|o| o.tags().contains_key("highway"))
+        .filter_map(|o| o.way().cloned())
+        .filter(|w| !w.nodes.is_empty())
+        .take(1099900)
+        .collect();
+
+    let nodes_to_read: HashSet<_> = ways.iter().flat_map(|w| w.nodes.clone()).collect();
+
+    reader.rewind().unwrap();
+
+    let node_coordinates: HashMap<_, _> = reader
+        .iter()
+        .filter_map(|o| o.ok())
+        .filter_map(|o| o.node().cloned())
+        .filter(|n| nodes_to_read.contains(&n.id))
+        .map(|n| (n.id, (n.decimicro_lat, n.decimicro_lon)))
+        .collect();
+
+    ways.iter()
+        .map(|w| {
+            let points = w
+                .nodes
+                .iter()
+                .filter_map(|n| node_coordinates.get(n).cloned())
+                .collect();
+            Path { points }
+        })
+        .filter(|p| !p.points.is_empty())
+        .collect()
 }
