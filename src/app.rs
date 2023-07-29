@@ -119,13 +119,14 @@ struct Path {
 fn read_nodes_from_file() -> Vec<Path> {
     let mut reader = OsmPbfReader::new(std::fs::File::open("uusima.pbf").unwrap());
 
+    const ROADS: usize = 100000;
     let ways: Vec<_> = reader
         .iter()
         .filter_map(|o| o.ok())
         .filter(|o| o.tags().contains_key("highway"))
         .filter_map(|o| o.way().cloned())
         .filter(|w| !w.nodes.is_empty())
-        .take(1099900)
+        .take(ROADS)
         .collect();
 
     let nodes_to_read: HashSet<_> = ways.iter().flat_map(|w| w.nodes.clone()).collect();
@@ -137,7 +138,7 @@ fn read_nodes_from_file() -> Vec<Path> {
         .filter_map(|o| o.ok())
         .filter_map(|o| o.node().cloned())
         .filter(|n| nodes_to_read.contains(&n.id))
-        .map(|n| (n.id, (n.decimicro_lat, n.decimicro_lon)))
+        .map(|n| (n.id, (-n.decimicro_lon, -n.decimicro_lat)))
         .collect();
 
     ways.iter()
