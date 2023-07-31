@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-
-use egui::{epaint::ahash::HashSet, plot::Plot, Ui};
-use osmpbfreader::{OsmObj, OsmPbfReader};
+use egui::{plot::Plot, Ui};
+use crate::zana;
+use crate::zana::Path;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 
@@ -23,7 +22,7 @@ impl TemplateApp {
 
         // Default::default()
         Self {
-            nodes: read_nodes_from_file(),
+            nodes: zana::read_nodes_from_file(),
         }
     }
 }
@@ -65,6 +64,8 @@ impl eframe::App for TemplateApp {
                     ui.hyperlink_to("Sorseg", "https://github.com/samoylovfp");
                     ui.label(" and ");
                     ui.hyperlink_to("Demoth", "https://demoth.dev");
+                    ui.label(" and ");
+                    ui.hyperlink_to("Julia", "https://juliabubnova.com");
                     ui.label(".");
                 });
             });
@@ -89,7 +90,7 @@ fn draw_line(nodes: &[Path], ui: &mut Ui) {
     //     })
     //     .collect();
 
-    let beninging = nodes[0].points[0];
+    let beginning = nodes[0].points[0];
 
     let lines: Vec<_> = nodes
         .iter()
@@ -97,59 +98,16 @@ fn draw_line(nodes: &[Path], ui: &mut Ui) {
             Line::new(PlotPoints::new(
                 p.points
                     .iter()
-                    .map(|(x, y)| [(beninging.0 - *x) as f64, (beninging.1 - *y) as f64])
+                    .map(|(x, y)| [(beginning.0 - *x) as f64, (beginning.1 - *y) as f64])
                     .collect(),
             ))
         })
         .collect();
 
     // Line::new(line_points);
-    egui::plot::Plot::new("example_plot")
+    Plot::new("example_plot")
         .data_aspect(1.0)
         .show(ui, |plot_ui| {
             lines.into_iter().for_each(|l| plot_ui.line(l))
         });
-}
-
-#[derive(Debug)]
-struct Path {
-    points: Vec<(i32, i32)>,
-}
-
-fn read_nodes_from_file() -> Vec<Path> {
-    let mut reader = OsmPbfReader::new(std::fs::File::open("uusima.pbf").unwrap());
-
-    const ROADS: usize = 100000;
-    let ways: Vec<_> = reader
-        .iter()
-        .filter_map(|o| o.ok())
-        .filter(|o| o.tags().contains_key("highway"))
-        .filter_map(|o| o.way().cloned())
-        .filter(|w| !w.nodes.is_empty())
-        .take(ROADS)
-        .collect();
-
-    let nodes_to_read: HashSet<_> = ways.iter().flat_map(|w| w.nodes.clone()).collect();
-
-    reader.rewind().unwrap();
-
-    let node_coordinates: HashMap<_, _> = reader
-        .iter()
-        .filter_map(|o| o.ok())
-        .filter_map(|o| o.node().cloned())
-        .filter(|n| nodes_to_read.contains(&n.id))
-        .map(|n| (n.id, (-n.decimicro_lon, -n.decimicro_lat)))
-        .collect();
-
-    ways.iter()
-        .map(|w| {
-            let points = w
-                .nodes
-                .iter()
-                .filter_map(|n| node_coordinates.get(n).cloned())
-                .collect();
-            Path { points }
-        })
-        .filter(|p| !p.points.is_empty())
-        .collect()
 }
