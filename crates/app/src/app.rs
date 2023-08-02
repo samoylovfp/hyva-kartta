@@ -1,12 +1,14 @@
-use std::collections::HashMap;
+use std::{cell::Cell, collections::HashMap, sync::Arc};
 
 use egui::{epaint::ahash::HashSet, plot::Plot, Ui};
 use osmpbfreader::{OsmObj, OsmPbfReader};
+use wasm_bindgen_futures::spawn_local;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 
 pub struct TemplateApp {
     nodes: Vec<Path>,
+    progress: Arc<Cell<f32>>,
 }
 
 impl TemplateApp {
@@ -21,9 +23,12 @@ impl TemplateApp {
         //     return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         // }
 
-        // Default::default()
+        let progress = Default::default();
+        let p2 = Arc::clone(&progress);
+
         Self {
             nodes: read_nodes_from_file(),
+            progress,
         }
     }
 }
@@ -37,7 +42,7 @@ impl eframe::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let Self { nodes } = self;
+        let Self { nodes, progress } = self;
 
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
@@ -89,7 +94,8 @@ fn draw_line(nodes: &[Path], ui: &mut Ui) {
     //     })
     //     .collect();
 
-    let beninging = nodes[0].points[0];
+    // let beninging = nodes[0].points[0];
+    let beninging = (0, 0);
 
     let lines: Vec<_> = nodes
         .iter()
@@ -117,6 +123,7 @@ struct Path {
 }
 
 fn read_nodes_from_file() -> Vec<Path> {
+    return vec![];
     let mut reader = OsmPbfReader::new(std::fs::File::open("uusima.pbf").unwrap());
 
     const ROADS: usize = 100000;

@@ -4,14 +4,7 @@
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-
-    let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "Hyvä Kartta",
-        native_options,
-        Box::new(|cc| Box::new(eframe_template::TemplateApp::new(cc))),
-    )
+    panic!("Non-web usage not supported yet");
 }
 
 // When compiling to web using trunk:
