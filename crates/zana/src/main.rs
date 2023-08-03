@@ -9,9 +9,8 @@ use std::{
 
 use bincode::{DefaultOptions, Options};
 use delta_encoding::{DeltaDecoderExt, DeltaEncoderExt};
-use fastbloom_rs::{BloomFilter, FilterBuilder, Membership};
 use h3o::{CellIndex, LatLng, Resolution};
-use itertools::izip;
+use itertools::{izip, Itertools};
 use osmpbfreader::{
     blobs::result_blob_into_iter, osmformat::StringTable, primitive_block_from_blob, Node, OsmObj,
     OsmPbfReader,
@@ -21,10 +20,19 @@ use stopwatch::Stopwatch;
 use zana::{read_ways, Path};
 
 fn main() {
-    // check_bloom();
     // recompress_pbf();
 
     time_loading_files();
+    // total_nodes();
+}
+
+fn total_nodes() {
+    let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
+    let num = f
+        .iter()
+        .filter(|o| matches!(o, Ok(OsmObj::Node(..))))
+        .count();
+    println!("{num} nodes in the file");
 }
 
 fn time_loading_files() {
@@ -47,15 +55,20 @@ fn time_loading_files() {
                 let mut buffer = vec![0; u32::from_le_bytes(len) as usize];
                 bufreader.read_exact(&mut buffer).unwrap();
 
-                let decoded: ZanaDenseNodes =
+                let decoded: ZanaData =
                     bincode::DefaultOptions::new().deserialize(&buffer).unwrap();
-
-                let ids = decoded.dids.iter().copied().original();
-                let lats = decoded.dlats.iter().copied().original();
-                let lons = decoded.dlons.iter().copied().original();
-                let mut nodes = Vec::with_capacity(decoded.dids.len());
-                for (did, dlat, dlon) in izip!(ids, lats, lons) {
-                    nodes.push((did, dlat, dlon))
+                
+                match decoded {
+                    ZanaData::Nodes(nodes) => {
+                        let ids = nodes.dids.iter().copied().original();
+                        let lats = nodes.dlats.iter().copied().original();
+                        let lons = nodes.dlons.iter().copied().original();
+                        let mut nodes = Vec::with_capacity(nodes.dids.len());
+                        for (did, dlat, dlon) in izip!(ids, lats, lons) {
+                            nodes.push((did, dlat, dlon))
+                        }
+                    }
+                    ZanaData::Paths(_) => {},
                 }
 
                 println!("Decoded chunk in {sw}");
@@ -65,11 +78,6 @@ fn time_loading_files() {
         }
     }
     println!("Read all files in {sw_total}");
-}
-
-fn check_bloom() {
-    let filter = BloomFilter::new(FilterBuilder::new(100_000, 0.01));
-    dbg!(filter.get_u8_array().len());
 }
 
 // working with paths in-memory is too wasteful
@@ -154,8 +162,10 @@ fn node_to_cell(n: &Node, res: Resolution) -> CellIndex {
         .to_cell(res)
 }
 
-fn default_bloom() -> BloomFilter {
-    BloomFilter::new(FilterBuilder::new(100_000, 0.01))
+#[derive(Serialize, Deserialize)]
+enum ZanaData {
+    Nodes(ZanaDenseNodes),
+    Paths(ZanaDensePaths),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -165,27 +175,46 @@ struct ZanaDenseNodes {
     dlons: Vec<i32>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct ZanaDensePaths {
+    dids: Vec<i64>,
+    dnodes: Vec<Vec<i64>>,
+}
+
+fn append_data_to_file(cell: CellIndex, data: &ZanaData) {
+    let encoded = bincode::DefaultOptions::new().serialize(data).unwrap();
+
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(format!("h3/{cell}.h3z"))
+        .unwrap();
+    let len: u32 = encoded.len().try_into().unwrap();
+    f.write_all(&len.to_le_bytes()).unwrap();
+    f.write_all(&encoded).unwrap();
+}
+
 fn recompress_pbf() {
     _ = std::fs::remove_dir_all("h3");
     std::fs::create_dir("h3").unwrap();
     let mut sw = Stopwatch::start_new();
 
-    // let mut bloom_filters: HashMap<CellIndex, BloomFilter> = HashMap::new();
+    // FIXME: we cannot hold all the nodes in memory in big files
+    let mut node_ids: HashMap<i64, CellIndex> = HashMap::new();
 
     let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
     for blob in f.blobs() {
         let blob = blob.unwrap();
         let mut cells_to_nodes: HashMap<CellIndex, Vec<Node>> = HashMap::new();
-
+        // FIXME: check all unwraps, api might sometimes return err on icompatible data,
+        //        zana needs to skip incompatible blocks
+        // TODO: iter only over nodes, should speed up conversion process
         for obj in result_blob_into_iter(Ok(blob)) {
             let obj = obj.unwrap();
             match obj {
                 OsmObj::Node(n) => {
                     let cell = node_to_cell(&n, Resolution::Five);
-                    // bloom_filters
-                    //     .entry(cell)
-                    //     .or_insert_with(default_bloom)
-                    //     .add(n.id.0.to_le_bytes().as_slice());
+                    node_ids.insert(n.id.0, cell);
                     cells_to_nodes.entry(cell).or_default().push(n);
                 }
                 _ => {}
@@ -202,29 +231,75 @@ fn recompress_pbf() {
             let node_lons_deltas: Vec<i32> =
                 nodes.iter().map(|n| n.decimicro_lon).deltas().collect();
 
-            let data_for_serialization = ZanaDenseNodes {
+            let data_for_serialization = ZanaData::Nodes(ZanaDenseNodes {
                 dids: node_ids_deltas,
                 dlats: node_lats_deltas,
                 dlons: node_lons_deltas,
-            };
+            });
 
-            let encoded = bincode::DefaultOptions::new()
-                .serialize(&data_for_serialization)
-                .unwrap();
-
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(format!("h3/{cell}.h3z"))
-                .unwrap();
-            let len: u32 = encoded.len().try_into().unwrap();
-            println!("Writing {len} bytes for {cell}");
-            f.write_all(&len.to_le_bytes()).unwrap();
-            f.write_all(&encoded).unwrap();
+            append_data_to_file(cell, &data_for_serialization)
         }
         println!("Written files at {sw}");
         sw.restart();
     }
+
+    f.rewind().unwrap();
+    let mut n_ways = 0;
+    let mut n_files_for_ways = 0;
+    let mut n_ways_with_more_than_one_file = 0;
+    let mut n_ways_with_zero_files = 0;
+    sw.restart();
+
+    let mut cells_to_ways = HashMap::new();
+    for blob in f.blobs() {
+        let blob = blob.unwrap();
+
+        for obj in result_blob_into_iter(Ok(blob)) {
+            let obj = obj.unwrap();
+            match obj {
+                OsmObj::Way(w) => {
+                    let cells_for_way: HashSet<_> = w
+                        .nodes
+                        .iter()
+                        .filter_map(|n| node_ids.get(&n.0).copied())
+                        .collect();
+                    n_ways += 1;
+                    n_files_for_ways += cells_for_way.len();
+                    match cells_for_way.len() {
+                        0 => n_ways_with_zero_files += 1,
+                        1 => {}
+                        _ => n_ways_with_more_than_one_file += 1,
+                    }
+                    for c in cells_for_way {
+                        cells_to_ways
+                            .entry(c)
+                            .or_insert_with(|| vec![])
+                            .push(w.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        println!("Ways from one blob processed in {sw}");
+        sw.restart();
+    }
+
+    for (cell, ways) in cells_to_ways {
+        let dids = ways.iter().map(|w| w.id.0).deltas().collect_vec();
+        let dnodes = ways
+            .iter()
+            .map(|w| w.nodes.iter().map(|n| n.0).deltas().collect_vec())
+            .collect_vec();
+        let data = ZanaData::Paths(ZanaDensePaths { dids, dnodes });
+        append_data_to_file(cell, &data);
+    }
+
+    dbg!(
+        n_ways,
+        n_ways_with_zero_files,
+        n_ways_with_more_than_one_file,
+        n_files_for_ways
+    );
 
     // in each blob:
     // iter nodes
