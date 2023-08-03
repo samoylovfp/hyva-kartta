@@ -3,7 +3,7 @@ use std::{
         hash_map::{Entry, OccupiedEntry},
         HashMap, HashSet,
     },
-    fs::File,
+    fs::{File, OpenOptions},
     io::{BufReader, Read, Write},
 };
 
@@ -20,8 +20,7 @@ use stopwatch::Stopwatch;
 use zana::{read_ways, Path};
 
 fn main() {
-    // recompress_pbf();
-
+    recompress_pbf();
     time_loading_files();
     // total_nodes();
 }
@@ -57,7 +56,7 @@ fn time_loading_files() {
 
                 let decoded: ZanaData =
                     bincode::DefaultOptions::new().deserialize(&buffer).unwrap();
-                
+
                 match decoded {
                     ZanaData::Nodes(nodes) => {
                         let ids = nodes.dids.iter().copied().original();
@@ -68,7 +67,7 @@ fn time_loading_files() {
                             nodes.push((did, dlat, dlon))
                         }
                     }
-                    ZanaData::Paths(_) => {},
+                    ZanaData::Paths(_) => {}
                 }
 
                 println!("Decoded chunk in {sw}");
@@ -175,10 +174,12 @@ struct ZanaDenseNodes {
     dlons: Vec<i32>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ZanaDensePaths {
     dids: Vec<i64>,
     dnodes: Vec<Vec<i64>>,
+    /// (key_i, val_i)*, 0
+    tags: Vec<u32>,
 }
 
 fn append_data_to_file(cell: CellIndex, data: &ZanaData) {
@@ -194,13 +195,35 @@ fn append_data_to_file(cell: CellIndex, data: &ZanaData) {
     f.write_all(&encoded).unwrap();
 }
 
-fn recompress_pbf() {
+#[derive(Default)]
+struct ZanaStringTable {
+    next_free_idx: u32,
+    strings: HashMap<String, u32>,
+}
+
+impl ZanaStringTable {
+    fn intern(&mut self, s: &str) -> u32 {
+        match self.strings.get(s) {
+            Some(i) => *i,
+            None => {
+                let res = self.next_free_idx;
+                self.strings.insert(s.to_string(), self.next_free_idx);
+                self.next_free_idx.checked_add(1).expect("Table is full");
+                res
+            }
+        }
+    }
+}
+
+/// it basically repeats the format of osm pbf but uses bincode instead of protobuf
+pub fn recompress_pbf() {
     _ = std::fs::remove_dir_all("h3");
     std::fs::create_dir("h3").unwrap();
     let mut sw = Stopwatch::start_new();
 
-    // FIXME: we cannot hold all the nodes in memory in big files
+    // FIXME: these maps are per-file, we need to make them per-blob
     let mut node_ids: HashMap<i64, CellIndex> = HashMap::new();
+    let mut string_table = ZanaStringTable::default();
 
     let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
     for blob in f.blobs() {
@@ -244,10 +267,6 @@ fn recompress_pbf() {
     }
 
     f.rewind().unwrap();
-    let mut n_ways = 0;
-    let mut n_files_for_ways = 0;
-    let mut n_ways_with_more_than_one_file = 0;
-    let mut n_ways_with_zero_files = 0;
     sw.restart();
 
     let mut cells_to_ways = HashMap::new();
@@ -263,13 +282,7 @@ fn recompress_pbf() {
                         .iter()
                         .filter_map(|n| node_ids.get(&n.0).copied())
                         .collect();
-                    n_ways += 1;
-                    n_files_for_ways += cells_for_way.len();
-                    match cells_for_way.len() {
-                        0 => n_ways_with_zero_files += 1,
-                        1 => {}
-                        _ => n_ways_with_more_than_one_file += 1,
-                    }
+
                     for c in cells_for_way {
                         cells_to_ways
                             .entry(c)
@@ -290,16 +303,19 @@ fn recompress_pbf() {
             .iter()
             .map(|w| w.nodes.iter().map(|n| n.0).deltas().collect_vec())
             .collect_vec();
-        let data = ZanaData::Paths(ZanaDensePaths { dids, dnodes });
+        let mut tags = vec![];
+        for (i, w) in ways.iter().enumerate() {
+            for (k, v) in w.tags.iter() {
+                tags.push(string_table.intern(&k));
+                tags.push(string_table.intern(&v));
+            }
+            if i != (ways.len() - 1) {
+                tags.push(0)
+            }
+        }
+        let data = ZanaData::Paths(ZanaDensePaths { dids, dnodes, tags });
         append_data_to_file(cell, &data);
     }
-
-    dbg!(
-        n_ways,
-        n_ways_with_zero_files,
-        n_ways_with_more_than_one_file,
-        n_files_for_ways
-    );
 
     // in each blob:
     // iter nodes
@@ -310,27 +326,11 @@ fn recompress_pbf() {
 
     // iter through target files and check if further splitting is required.
 
-    // println!("Read all paths in {sw}");
-    // let points = paths.iter().flat_map(|p| p.points.iter()).count();
-    // let unique_points = paths
-    //     .iter()
-    //     .flat_map(|p| p.points.iter())
-    //     .collect::<HashSet<_>>()
-    //     .len();
-    // println!(
-    //     "{points}, {unique_points}, {:.3} % duplicates",
-    //     (points - unique_points) as f32 * 100.0 / points as f32
-    // )
 
-    // let mut tree = BalancedH3::default();
+    let f = OpenOptions::new().create(true).write(true).open("h3/stringtable.binc").unwrap();
+    let mut sorted_strings = string_table.strings.into_iter().collect_vec();
+    sorted_strings.sort_by_key(|(_, k)|*k);
+    let sorted_strings = sorted_strings.into_iter().map(|(k,_)|k).collect_vec();
+    bincode::DefaultOptions::new().serialize_into(f, &sorted_strings).unwrap();
 
-    // sw.restart();
-    // for p in paths {
-    //     tree.add_no_balance(p);
-    // }
-    // println!("Added all paths in {sw} to {}", tree.cells.len());
-    // sw.restart();
-    // tree.balance();
-    // println!("Balanced all paths into {} nodes in {sw}", tree.cells.len());
-    // println!("in {sw} got a map with keys {:?}", h3o_cells.keys());
 }
