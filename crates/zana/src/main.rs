@@ -5,6 +5,7 @@ use std::{
     },
     fs::{File, OpenOptions},
     io::{BufReader, Read, Write},
+    path::PathBuf,
 };
 
 use bincode::{DefaultOptions, Options};
@@ -17,12 +18,20 @@ use osmpbfreader::{
 };
 use serde::{Deserialize, Serialize};
 use stopwatch::Stopwatch;
-use zana::{read_ways, Path};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 fn main() {
-    recompress_pbf();
-    time_loading_files();
+    // recompress_pbf();
+    // time_loading_files();
     // total_nodes();
+    let sw = Stopwatch::start_new();
+    draw_tiles(&[
+        "851f1d4bfffffff",
+        "851f18b3fffffff",
+        "851f1d4ffffffff",
+        "851f18b7fffffff",
+    ]);
+    println!("Read and drawn a busy tile in {sw}");
 }
 
 fn total_nodes() {
@@ -39,41 +48,7 @@ fn time_loading_files() {
     for f in std::fs::read_dir("h3").unwrap() {
         let f = f.unwrap();
         if f.path().extension().and_then(|e| e.to_str()) == Some("h3z") {
-            let mut chunks_per_file = 0;
-            let mut sw = Stopwatch::start_new();
-            let mut bufreader = BufReader::new(std::fs::File::open(f.path()).unwrap());
-            let mut len = 0_u32.to_le_bytes();
-            loop {
-                match bufreader.read_exact(&mut len) {
-                    Ok(()) => {
-                        chunks_per_file += 1;
-                    }
-                    Err(_) => break,
-                }
-                println!("Chunk len {}", u32::from_le_bytes(len));
-                let mut buffer = vec![0; u32::from_le_bytes(len) as usize];
-                bufreader.read_exact(&mut buffer).unwrap();
-
-                let decoded: ZanaData =
-                    bincode::DefaultOptions::new().deserialize(&buffer).unwrap();
-
-                match decoded {
-                    ZanaData::Nodes(nodes) => {
-                        let ids = nodes.dids.iter().copied().original();
-                        let lats = nodes.dlats.iter().copied().original();
-                        let lons = nodes.dlons.iter().copied().original();
-                        let mut nodes = Vec::with_capacity(nodes.dids.len());
-                        for (did, dlat, dlon) in izip!(ids, lats, lons) {
-                            nodes.push((did, dlat, dlon))
-                        }
-                    }
-                    ZanaData::Paths(_) => {}
-                }
-
-                println!("Decoded chunk in {sw}");
-                sw.restart();
-            }
-            println!("file {f:?} has {chunks_per_file} chunks");
+            read_zana_data(f.path().to_str().unwrap());
         }
     }
     println!("Read all files in {sw_total}");
@@ -162,7 +137,7 @@ fn node_to_cell(n: &Node, res: Resolution) -> CellIndex {
 }
 
 #[derive(Serialize, Deserialize)]
-enum ZanaData {
+enum ZanaDenseData {
     Nodes(ZanaDenseNodes),
     Paths(ZanaDensePaths),
 }
@@ -174,6 +149,24 @@ struct ZanaDenseNodes {
     dlons: Vec<i32>,
 }
 
+#[derive(Debug)]
+enum ZanaObj {
+    Node(ZanaNode),
+    Path(ZanaPath),
+}
+#[derive(Debug)]
+struct ZanaNode {
+    id: i64,
+    decimicro_lat: i32,
+    decimicro_lon: i32,
+}
+
+#[derive(Debug)]
+struct ZanaPath {
+    nodes: Vec<i64>,
+    tags: Vec<(u32, u32)>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ZanaDensePaths {
     dids: Vec<i64>,
@@ -182,7 +175,7 @@ struct ZanaDensePaths {
     tags: Vec<u32>,
 }
 
-fn append_data_to_file(cell: CellIndex, data: &ZanaData) {
+fn append_data_to_file(cell: CellIndex, data: &ZanaDenseData) {
     let encoded = bincode::DefaultOptions::new().serialize(data).unwrap();
 
     let mut f = std::fs::OpenOptions::new()
@@ -195,10 +188,18 @@ fn append_data_to_file(cell: CellIndex, data: &ZanaData) {
     f.write_all(&encoded).unwrap();
 }
 
-#[derive(Default)]
 struct ZanaStringTable {
     next_free_idx: u32,
     strings: HashMap<String, u32>,
+}
+
+impl Default for ZanaStringTable {
+    fn default() -> Self {
+        Self {
+            next_free_idx: 1,
+            strings: Default::default(),
+        }
+    }
 }
 
 impl ZanaStringTable {
@@ -208,7 +209,7 @@ impl ZanaStringTable {
             None => {
                 let res = self.next_free_idx;
                 self.strings.insert(s.to_string(), self.next_free_idx);
-                self.next_free_idx.checked_add(1).expect("Table is full");
+                self.next_free_idx = self.next_free_idx.checked_add(1).expect("Table is full");
                 res
             }
         }
@@ -217,15 +218,21 @@ impl ZanaStringTable {
 
 /// it basically repeats the format of osm pbf but uses bincode instead of protobuf
 pub fn recompress_pbf() {
-    _ = std::fs::remove_dir_all("h3");
-    std::fs::create_dir("h3").unwrap();
+    let h3_dir = PathBuf::from("h3");
+    let h3_dir_backup = PathBuf::from("h3_old");
+    if h3_dir.exists() {
+        _ = std::fs::remove_dir_all(&h3_dir_backup);
+        std::fs::rename(&h3_dir, &h3_dir_backup).unwrap();
+    }
+
+    std::fs::create_dir(&h3_dir).unwrap();
     let mut sw = Stopwatch::start_new();
 
     // FIXME: these maps are per-file, we need to make them per-blob
     let mut node_ids: HashMap<i64, CellIndex> = HashMap::new();
     let mut string_table = ZanaStringTable::default();
 
-    let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
+    let mut f = OsmPbfReader::new(File::open("berlin.pbf").unwrap());
     for blob in f.blobs() {
         let blob = blob.unwrap();
         let mut cells_to_nodes: HashMap<CellIndex, Vec<Node>> = HashMap::new();
@@ -254,7 +261,7 @@ pub fn recompress_pbf() {
             let node_lons_deltas: Vec<i32> =
                 nodes.iter().map(|n| n.decimicro_lon).deltas().collect();
 
-            let data_for_serialization = ZanaData::Nodes(ZanaDenseNodes {
+            let data_for_serialization = ZanaDenseData::Nodes(ZanaDenseNodes {
                 dids: node_ids_deltas,
                 dlats: node_lats_deltas,
                 dlons: node_lons_deltas,
@@ -304,33 +311,200 @@ pub fn recompress_pbf() {
             .map(|w| w.nodes.iter().map(|n| n.0).deltas().collect_vec())
             .collect_vec();
         let mut tags = vec![];
-        for (i, w) in ways.iter().enumerate() {
+
+        for w in ways.iter() {
             for (k, v) in w.tags.iter() {
                 tags.push(string_table.intern(&k));
                 tags.push(string_table.intern(&v));
             }
-            if i != (ways.len() - 1) {
-                tags.push(0)
-            }
+            tags.push(0)
         }
-        let data = ZanaData::Paths(ZanaDensePaths { dids, dnodes, tags });
+        // remove last 0
+        if tags.len() > 0 {
+            tags.pop();
+        }
+
+        let data = ZanaDenseData::Paths(ZanaDensePaths { dids, dnodes, tags });
         append_data_to_file(cell, &data);
     }
 
-    // in each blob:
-    // iter nodes
-    //   1. separate nodes into proper h3 files
-    //   2. save a bloom filter for a file
-    // iter ways
-    //   1. use bloom filter to add ways to file with respective nodes
-
-    // iter through target files and check if further splitting is required.
-
-
-    let f = OpenOptions::new().create(true).write(true).open("h3/stringtable.binc").unwrap();
+    let f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(h3_dir.join("stringtable.binc"))
+        .unwrap();
     let mut sorted_strings = string_table.strings.into_iter().collect_vec();
-    sorted_strings.sort_by_key(|(_, k)|*k);
-    let sorted_strings = sorted_strings.into_iter().map(|(k,_)|k).collect_vec();
-    bincode::DefaultOptions::new().serialize_into(f, &sorted_strings).unwrap();
+    sorted_strings.sort_by_key(|(_, k)| *k);
+    let sorted_strings = sorted_strings.into_iter().map(|(k, _)| k).collect_vec();
+    bincode::DefaultOptions::new()
+        .serialize_into(f, &sorted_strings)
+        .unwrap();
+}
 
+pub fn draw_tiles(tile_idexes: &[&str]) {
+    let string_table_file = std::fs::File::open("h3/stringtable.binc").unwrap();
+    let string_table: Vec<String> = bincode::DefaultOptions::new()
+        .deserialize_from(string_table_file)
+        .unwrap();
+
+    let zana_data = tile_idexes
+        .iter()
+        .flat_map(|tile_name| read_zana_data(&format!("h3/{tile_name}.h3z")))
+        .collect_vec();
+
+    let node_id_hashmap: HashMap<_, _> = zana_data
+        .iter()
+        .filter_map(|o| match o {
+            ZanaObj::Node(n) => Some((n.id, n)),
+            _ => None,
+        })
+        .collect();
+
+    let building_tag = string_table.iter().position(|t| t == "building").unwrap() as u32 + 1;
+    let power_tag = string_table.iter().position(|t| t == "power").unwrap() as u32 + 1;
+
+    let mut building_style = PaintStyle::default();
+    building_style.paint.set_color_rgba8(20, 100, 20, 255);
+
+    let mut power_style = PaintStyle::default();
+    power_style.paint.set_color_rgba8(100, 200, 255, 150);
+    power_style.stroke.width = 2.0;
+
+    let (min_lat, max_lat) = node_id_hashmap
+        .values()
+        .map(|n| n.decimicro_lat)
+        .minmax()
+        .into_option()
+        .unwrap();
+    let (min_lon, max_lon) = node_id_hashmap
+        .values()
+        .map(|n| n.decimicro_lon)
+        .minmax()
+        .into_option()
+        .unwrap();
+
+    let size = 2048;
+
+    let lon_scale = size as f64 / (max_lon - min_lon) as f64;
+    let lat_scale = size as f64 / (max_lat - min_lat) as f64;
+
+    let mut pixmap = Pixmap::new(size, size).unwrap();
+    pixmap.fill(Color::BLACK);
+
+    for obj in &zana_data {
+        match obj {
+            ZanaObj::Node(_) => {}
+            ZanaObj::Path(p) => {
+                if p.tags.iter().find(|(k, _)| *k == building_tag).is_some() {
+                    draw_path(
+                        &mut pixmap,
+                        &p,
+                        &node_id_hashmap,
+                        (min_lat as f64, min_lon as f64),
+                        (lat_scale, lon_scale),
+                        &building_style,
+                    )
+                }
+                if p.tags.iter().find(|(k, _)| *k == power_tag).is_some() {
+                    draw_path(
+                        &mut pixmap,
+                        &p,
+                        &node_id_hashmap,
+                        (min_lat as f64, min_lon as f64),
+                        (lat_scale, lon_scale),
+                        &power_style,
+                    )
+                }
+            }
+        }
+    }
+    pixmap.save_png("berlin.png").unwrap();
+}
+
+#[derive(Default)]
+struct PaintStyle<'paint> {
+    paint: Paint<'paint>,
+    stroke: Stroke,
+}
+
+fn draw_path(
+    pixmap: &mut Pixmap,
+    p: &ZanaPath,
+    node_id_hashmap: &HashMap<i64, &ZanaNode>,
+    offset: (f64, f64),
+    scale: (f64, f64),
+    PaintStyle { paint, stroke }: &PaintStyle,
+) {
+    let geo_to_pix = |lat: i32, lon: i32| {
+        (
+            (lon as f64 - offset.1) * scale.1,
+            (lat as f64 - offset.0) * scale.0,
+        )
+    };
+    let mut pb = PathBuilder::new();
+    let node_coords = p
+        .nodes
+        .iter()
+        .filter_map(|n| node_id_hashmap.get(n))
+        .collect_vec();
+    if node_coords.len() > 1 {
+        let start = geo_to_pix(node_coords[0].decimicro_lat, node_coords[0].decimicro_lon);
+        pb.move_to(start.0 as f32, start.1 as f32);
+    }
+    for node in &node_coords[1..] {
+        let coords = geo_to_pix(node.decimicro_lat, node.decimicro_lon);
+        pb.line_to(coords.0 as f32, coords.1 as f32);
+    }
+
+    if let Some(p) = pb.finish() {
+        pixmap.stroke_path(&p, &paint, &stroke, Transform::identity(), None);
+    }
+}
+
+fn read_zana_data(fname: &str) -> Vec<ZanaObj> {
+    let mut result = vec![];
+    let mut bufreader = BufReader::new(std::fs::File::open(fname).unwrap());
+    let mut len = 0_u32.to_le_bytes();
+    loop {
+        match bufreader.read_exact(&mut len) {
+            Ok(()) => {}
+            Err(_) => break,
+        }
+        let mut buffer = vec![0; u32::from_le_bytes(len) as usize];
+        bufreader.read_exact(&mut buffer).unwrap();
+
+        let decoded: ZanaDenseData = bincode::DefaultOptions::new().deserialize(&buffer).unwrap();
+
+        match decoded {
+            ZanaDenseData::Nodes(nodes) => {
+                let ids = nodes.dids.iter().copied().original();
+                let lats = nodes.dlats.iter().copied().original();
+                let lons = nodes.dlons.iter().copied().original();
+
+                for (id, lat, lon) in izip!(ids, lats, lons) {
+                    result.push(ZanaObj::Node(ZanaNode {
+                        id,
+                        decimicro_lat: lat,
+                        decimicro_lon: lon,
+                    }));
+                }
+            }
+            ZanaDenseData::Paths(p) => {
+                // let path_ids = p.dids.original ... etc
+                let path_node_ids = p
+                    .dnodes
+                    .into_iter()
+                    .map(|dnodes| dnodes.into_iter().original().collect_vec());
+                let path_tags = p.tags.split(|t| *t == 0);
+
+                for (node_ids, tags) in izip!(path_node_ids, path_tags) {
+                    result.push(ZanaObj::Path(ZanaPath {
+                        nodes: node_ids,
+                        tags: tags.chunks_exact(2).map(|c| (c[0], c[1])).collect_vec(),
+                    }))
+                }
+            }
+        }
+    }
+    result
 }
