@@ -27,15 +27,24 @@ fn main() {
     // time_loading_files();
     // total_nodes();
     let sw = Instant::now();
-    let cell: CellIndex = "851126d3fffffff".parse().unwrap();
-    let ll = LatLng::from(cell);
-    println!("{ll:?}");
-    draw_tiles(&[
-        "851126d3fffffff",
-        "8508996bfffffff",
-        "851126d7fffffff",
-        "8508996ffffffff",
-    ]);
+
+    // draw_tiles(&[
+    //     "851126d3fffffff",
+    //     "8508996bfffffff",
+    //     "851126d7fffffff",
+    //     "8508996ffffffff",
+    // ], "helsinki.png");
+
+    draw_tiles(
+        &[
+            "851f1d4bfffffff",
+            "851f18b3fffffff",
+            "851f1d4ffffffff",
+            "851f18b7fffffff",
+            "851f1887fffffff",
+        ],
+        "germ.png",
+    );
     // count_tiles_objects();
     println!("Read and drawn a busy tile in {:?}", sw.elapsed());
 }
@@ -252,7 +261,7 @@ pub fn recompress_pbf() {
     let mut node_ids: HashMap<i64, CellIndex> = HashMap::new();
     let mut string_table = ZanaStringTable::default();
 
-    let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
+    let mut f = OsmPbfReader::new(File::open("berlin.pbf").unwrap());
     for blob in f.blobs() {
         let blob = blob.unwrap();
         let mut cells_to_nodes: HashMap<CellIndex, Vec<Node>> = HashMap::new();
@@ -264,7 +273,7 @@ pub fn recompress_pbf() {
             match obj {
                 OsmObj::Node(n) => {
                     let cell = node_to_cell(&n, Resolution::Five);
-                    node_ids.insert(n.id.0, cell);
+                    assert!(node_ids.insert(n.id.0, cell).is_none());
                     cells_to_nodes.entry(cell).or_default().push(n);
                 }
                 _ => {}
@@ -361,7 +370,7 @@ pub fn recompress_pbf() {
         .unwrap();
 }
 
-pub fn draw_tiles(tile_idexes: &[&str]) {
+pub fn draw_tiles(tile_idexes: &[&str], fname: &str) {
     let string_table_file = std::fs::File::open("h3/stringtable.binc").unwrap();
     let string_table: Vec<String> = bincode::DefaultOptions::new()
         .deserialize_from(string_table_file)
@@ -421,12 +430,16 @@ pub fn draw_tiles(tile_idexes: &[&str]) {
         .into_option()
         .unwrap();
 
-    let size = 2048;
+    let x_span = (max_x - min_x) as f64;
+    let y_span = (max_y - min_y) as f64;
 
-    let x_scale = size as f64 / (max_x - min_x) as f64;
-    let y_scale = size as f64 / (max_y - min_y) as f64;
+    let x_size = 4096;
+    let y_size = (x_size as f64 / x_span * y_span) as u32;
 
-    let mut pixmap = Pixmap::new(size, size).unwrap();
+    let x_scale = x_size as f64 / x_span;
+    let y_scale = y_size as f64 / y_span;
+
+    let mut pixmap = Pixmap::new(x_size,  y_size).unwrap();
     pixmap.fill(Color::BLACK);
     fn has_tag(p: &ZanaPath, tag: usize) -> bool {
         p.tags.iter().find(|(k, _)| *k == tag as u32).is_some()
@@ -458,7 +471,7 @@ pub fn draw_tiles(tile_idexes: &[&str]) {
             }
         }
     }
-    pixmap.save_png("map.png").unwrap();
+    pixmap.save_png(fname).unwrap();
 }
 
 #[derive(Default)]
