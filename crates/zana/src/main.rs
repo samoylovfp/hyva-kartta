@@ -27,24 +27,25 @@ fn main() {
     // time_loading_files();
     // total_nodes();
     let sw = Instant::now();
+    draw_tiles(&[
+        "851126d3fffffff",
+        "8508996bfffffff",
+        "851126d7fffffff",
+        "8508996ffffffff",
+        "851126c3fffffff",
+        "8508997bfffffff",
+    ], "helsinki.png");
 
-    // draw_tiles(&[
-    //     "851126d3fffffff",
-    //     "8508996bfffffff",
-    //     "851126d7fffffff",
-    //     "8508996ffffffff",
-    // ], "helsinki.png");
-
-    draw_tiles(
-        &[
-            "851f1d4bfffffff",
-            "851f18b3fffffff",
-            "851f1d4ffffffff",
-            "851f18b7fffffff",
-            "851f1887fffffff",
-        ],
-        "germ.png",
-    );
+    // draw_tiles(
+    //     &[
+    //         "851f1d4bfffffff",
+    //         "851f18b3fffffff",
+    //         "851f1d4ffffffff",
+    //         "851f18b7fffffff",
+    //         "851f1887fffffff",
+    //     ],
+    //     "germ.png",
+    // );
     // count_tiles_objects();
     println!("Read and drawn a busy tile in {:?}", sw.elapsed());
 }
@@ -261,7 +262,7 @@ pub fn recompress_pbf() {
     let mut node_ids: HashMap<i64, CellIndex> = HashMap::new();
     let mut string_table = ZanaStringTable::default();
 
-    let mut f = OsmPbfReader::new(File::open("berlin.pbf").unwrap());
+    let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
     for blob in f.blobs() {
         let blob = blob.unwrap();
         let mut cells_to_nodes: HashMap<CellIndex, Vec<Node>> = HashMap::new();
