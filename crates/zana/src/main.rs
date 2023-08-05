@@ -1,76 +1,180 @@
 use std::{
-    collections::{
-        hash_map::{Entry, OccupiedEntry},
-        HashMap, HashSet,
-    },
+    cell::{Cell, self},
+    collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::{BufReader, Read, Write},
     path::PathBuf,
+    sync::{atomic::AtomicU64, mpsc::channel, Arc, Mutex},
     time::Instant,
 };
 
-use bincode::{DefaultOptions, Options};
+use bincode::Options;
 use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use delta_encoding::{DeltaDecoderExt, DeltaEncoderExt};
 use geo_types::Coord;
 use h3o::{CellIndex, LatLng, Resolution};
 use itertools::{izip, Itertools};
-use osmpbfreader::{
-    blobs::result_blob_into_iter, osmformat::StringTable, primitive_block_from_blob, Node, OsmObj,
-    OsmPbfReader,
-};
+use osmpbfreader::{blobs::result_blob_into_iter, Node, OsmObj, OsmPbfReader};
+use rayon::prelude::{ParallelBridge, ParallelIterator};
 use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTransform};
+use tokio::runtime::Runtime;
 
 fn main() {
-    // recompress_pbf();
-    // time_loading_files();
-    // total_nodes();
-    let sw = Instant::now();
-    draw_tiles(&[
-        "851126d3fffffff",
-        "8508996bfffffff",
-        "851126d7fffffff",
-        "8508996ffffffff",
-        "851126c3fffffff",
-        "8508997bfffffff",
-    ], "helsinki.png");
-
-    // draw_tiles(
-    //     &[
-    //         "851f1d4bfffffff",
-    //         "851f18b3fffffff",
-    //         "851f1d4ffffffff",
-    //         "851f18b7fffffff",
-    //         "851f1887fffffff",
-    //     ],
-    //     "germ.png",
-    // );
-    // count_tiles_objects();
-    println!("Read and drawn a busy tile in {:?}", sw.elapsed());
+    // ingest_into_sqlite();
+    ingest_into_sled();
 }
 
-fn count_tiles_objects() {
-    let files = std::fs::read_dir("h3").unwrap();
-    for f in files {
-        let f = f.unwrap();
-        if f.path().extension().and_then(|s| s.to_str()) != Some("h3z") {
-            continue;
+fn cell_index_to_num(c: CellIndex) -> u64 {
+    c.into()
+}
+
+fn ingest_into_sled() {
+    let mut sw = Instant::now();
+    let db = sled::Config::new()
+        .mode(sled::Mode::LowSpace)
+        .path("zana.sled")
+        .cache_capacity(1_000_000)
+        .compression_factor(22)
+        .print_profile_on_drop(true)
+        .use_compression(true)
+        .open()
+        .unwrap();
+
+    let cell_tree = db.open_tree("h3").unwrap();
+    let lat_lon_tree = db.open_tree("lat").unwrap();
+    let items = AtomicU64::new(0);
+   
+    osmobj("uusimaa.pbf")
+        .par_iter()
+        .chain(osmobj("berlin.pbf").par_iter())
+        .par_bridge()
+        .for_each(|o| {
+            match o.unwrap() {
+                OsmObj::Node(n) => {
+                    db
+                        .insert(
+                            n.id.0.to_le_bytes(),
+                            &cell_index_to_num(node_to_cell(&n, Resolution::Twelve)).to_le_bytes(),
+                        )
+                        .unwrap();
+
+                    let mut lat_lon = [0; 8];
+                    let (lat, lon) = lat_lon.split_at_mut(4);
+                    lat.swap_with_slice(&mut n.decimicro_lat.to_le_bytes());
+                    lon.swap_with_slice(&mut n.decimicro_lon.to_le_bytes());
+                    lat_lon_tree.insert(n.id.0.to_le_bytes(), &lat_lon).unwrap();
+                }
+                OsmObj::Way(_) => {}
+                OsmObj::Relation(_) => {}
+            }
+            let items = items.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if items % 100_000 == 0 {
+                println!("{items}")
+            }
+        });
+    db.flush().unwrap();
+}
+
+fn osmobj(fname: &str) -> OsmPbfReader<File> {
+    OsmPbfReader::new(File::open(fname).unwrap())
+}
+
+fn ingest_into_sqlite() {
+    let rt = Runtime::new().unwrap();
+
+    let conn = rt.block_on(open_connection());
+
+    rt.block_on(async {
+        ingest_into_db(&conn, "uusimaa.pbf").await;
+        ingest_into_db(&conn, "berlin.pbf").await;
+    });
+}
+
+async fn open_connection() -> SqlitePool {
+    SqlitePool::connect("zana.db").await.unwrap()
+}
+
+async fn ingest_into_db(pool: &SqlitePool, fname: &str) {
+    let fname = fname.to_owned();
+    let (sender, mut recv) = tokio::sync::mpsc::channel(1024);
+    tokio::task::spawn_blocking(move || {
+        let mut reader = OsmPbfReader::new(std::fs::File::open(fname).unwrap());
+        for obj in reader.iter() {
+            sender.blocking_send(obj.unwrap()).unwrap();
         }
-        println!(
-            "{f:?}, {}",
-            read_zana_data(f.path().to_str().unwrap()).len()
-        )
+    });
+    let mut items = 0;
+    let mut start = Instant::now();
+
+    let mut trans = pool.begin().await.unwrap();
+    let mut trans_items = 0;
+    let commit_on = 1_000_000;
+
+    let mut last_sec_items = 0;
+    while let Some(d) = recv.recv().await {
+        if start.elapsed().as_secs() > 0 {
+            println!(
+                "inserted {items:>10} in {:.3?}, ~{} items per sec",
+                start.elapsed(),
+                last_sec_items
+            );
+            last_sec_items = 0;
+            start = Instant::now();
+        }
+        upsert_obj(d, &mut trans).await;
+        items += 1;
+        trans_items += 1;
+        last_sec_items += 1;
+        if trans_items >= commit_on {
+            trans.commit().await.unwrap();
+            trans = pool.begin().await.unwrap();
+            trans_items = 0;
+        }
     }
+    trans.commit().await.unwrap();
 }
 
-fn total_nodes() {
-    let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
-    let num = f
-        .iter()
-        .filter(|o| matches!(o, Ok(OsmObj::Node(..))))
-        .count();
-    println!("{num} nodes in the file");
+async fn upsert_obj(o: OsmObj, t: &mut Transaction<'_, Sqlite>) {
+    match o {
+        OsmObj::Node(n) => {
+            let num: u64 = node_to_cell(&n, Resolution::try_from(12).unwrap()).into();
+            let cell_id = i64::from_le_bytes(num.to_le_bytes());
+
+            sqlx::query!(
+                "INSERT INTO nodes (
+                id,
+
+                decimicro_lat,
+                decimicro_lon,
+                cell12
+            ) VALUES (
+                ?1,
+
+                ?2,
+                ?3,
+
+                ?4
+            
+            ) ON CONFLICT DO UPDATE SET 
+                decimicro_lat = ?2,
+                decimicro_lon = ?3,
+                cell12=?4
+              
+            ",
+                n.id.0,
+                n.decimicro_lat,
+                n.decimicro_lon,
+                cell_id
+            )
+            .execute(&mut **t)
+            .await
+            .unwrap();
+        }
+        OsmObj::Way(_) => { /* todo */ }
+        OsmObj::Relation(..) => { /* todo */ }
+    }
 }
 
 fn time_loading_files() {
@@ -84,86 +188,8 @@ fn time_loading_files() {
     println!("Read all files in {:?}", sw_total.elapsed());
 }
 
-// working with paths in-memory is too wasteful
-// #[derive(Debug)]
-// enum Cell {
-//     Filling(Vec<Path>),
-//     // capacity overfilled and the cell was split into children
-//     Split,
-// }
-
-// struct BalancedH3 {
-//     max_elements_per_cell: usize,
-//     cells: HashMap<CellIndex, Cell>,
-// }
-
-// impl Default for BalancedH3 {
-//     fn default() -> Self {
-//         Self {
-//             max_elements_per_cell: 10_000,
-//             cells: Default::default(),
-//         }
-//     }
-// }
-
-// impl BalancedH3 {
-//     fn add_no_balance(&mut self, p: Path) {
-//         for (lon, lat) in p.iter_lon_lat() {
-//             let mut res = Resolution::Zero;
-//             let coord = LatLng::new(lat, lon).unwrap();
-//             // FIXME: get rid of "unreachables"
-//             loop {
-//                 let c = coord.to_cell(res);
-//                 let container = if self.cells.contains_key(&c) {
-//                     match self.cells.get_mut(&c).unwrap() {
-//                         Cell::Filling(f) => f,
-//                         Cell::Split => {
-//                             res = res
-//                                 .succ()
-//                                 .expect("balancing algo to never split the last resolution level");
-//                             continue;
-//                         }
-//                     }
-//                 } else {
-//                     self.cells.insert(c, Cell::Filling(vec![]));
-//                     match self.cells.get_mut(&c).unwrap() {
-//                         Cell::Filling(f) => f,
-//                         Cell::Split => unreachable!(),
-//                     }
-//                 };
-//                 container.push(p.clone());
-//             }
-//         }
-//     }
-
-//     fn balance(&mut self) {
-//         loop {
-//             let keys_to_split: Vec<CellIndex> = self
-//                 .cells
-//                 .iter()
-//                 .filter(|(k, v)| matches!(v, Cell::Filling(c) if c.len() > self.max_elements_per_cell && k.succ().is_some()))
-//                 .map(|(k, _)| k.to_owned())
-//                 .collect();
-//             if keys_to_split.is_empty() {
-//                 return;
-//             }
-//             for k in keys_to_split {
-//                 let Cell::Filling(v) = self.cells.remove(&k).unwrap() else {
-//                     unreachable!()
-//                 };
-//                 self.cells.insert(k, Cell::Split);
-//                 for p in v {
-//                     self.add_no_balance(p)
-//                 }
-//             }
-//         }
-//     }
-// }
-
 fn node_to_cell(n: &Node, res: Resolution) -> CellIndex {
-    LatLng::new(n.decimicro_lat as f64 / 1e7, n.decimicro_lon as f64 / 1e7)
-        .unwrap()
-        .to_cell(res)
+    LatLng::new(n.lat(), n.lon()).unwrap().to_cell(res)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -440,7 +466,7 @@ pub fn draw_tiles(tile_idexes: &[&str], fname: &str) {
     let x_scale = x_size as f64 / x_span;
     let y_scale = y_size as f64 / y_span;
 
-    let mut pixmap = Pixmap::new(x_size,  y_size).unwrap();
+    let mut pixmap = Pixmap::new(x_size, y_size).unwrap();
     pixmap.fill(Color::BLACK);
     fn has_tag(p: &ZanaPath, tag: usize) -> bool {
         p.tags.iter().find(|(k, _)| *k == tag as u32).is_some()
