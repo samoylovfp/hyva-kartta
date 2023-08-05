@@ -1,6 +1,5 @@
 /target
 /dist
-/*.pbf
+*.pbf
 /h3*
 /*.png
-/zana.db

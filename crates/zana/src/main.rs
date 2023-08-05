@@ -1,5 +1,5 @@
 use std::{
-    cell::{Cell, self},
+    cell::{self, Cell},
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::{BufReader, Read, Write},
@@ -9,172 +9,100 @@ use std::{
 };
 
 use bincode::Options;
+use clickhouse::{Client, Row};
 use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use delta_encoding::{DeltaDecoderExt, DeltaEncoderExt};
 use geo_types::Coord;
 use h3o::{CellIndex, LatLng, Resolution};
 use itertools::{izip, Itertools};
 use osmpbfreader::{blobs::result_blob_into_iter, Node, OsmObj, OsmPbfReader};
-use rayon::prelude::{ParallelBridge, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, SqlitePool, Transaction};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTransform};
 use tokio::runtime::Runtime;
 
 fn main() {
     // ingest_into_sqlite();
-    ingest_into_sled();
+    Runtime::new().unwrap().block_on(ingest_into_clickhouse());
+}
+
+#[derive(Row, Serialize)]
+struct CHNode {
+    id: i64,
+    decimicro_lat: i32,
+    decimicro_lon: i32,
+    cell12: u64,
+    cell3: u64,
+    tags: Vec<(u64, u64)>,
+}
+
+async fn ingest_into_clickhouse() {
+    let client = Client::default().with_url("http://localhost:8123");
+    let mut string_map = HashMap::<String, u64>::new();
+
+    let mut intern = |s: &str| {
+        let next_idx = string_map.len() as u64 + 1;
+        match string_map.get(s) {
+            Some(n) => *n,
+            None => {
+                string_map.insert(s.to_string(), next_idx);
+                next_idx
+            }
+        }
+    };
+
+    let mut items = 0;
+    let mut items_per_sec = 0;
+    let mut sw = Instant::now();
+
+    let mut insert = client.insert("nodes").unwrap();
+    for obj in osmobj("uusimaa.pbf")
+        .par_iter()
+        .chain(osmobj("berlin.pbf").par_iter())
+    {
+        let obj = obj.unwrap();
+        let node = match obj {
+            OsmObj::Node(n) => n,
+            _ => continue,
+        };
+        let cell12 = node_to_cell(&node, Resolution::Twelve);
+        let cell3 = cell12.parent(Resolution::Three).unwrap();
+        insert
+            .write(&CHNode {
+                id: node.id.0,
+                decimicro_lat: node.decimicro_lat,
+                decimicro_lon: node.decimicro_lon,
+                cell12: cell_index_to_num(cell12),
+                cell3: cell_index_to_num(cell3),
+                tags: node
+                    .tags
+                    .iter()
+                    .map(|(k, v)| (intern(k), intern(v)))
+                    .collect(),
+            })
+            .await
+            .unwrap();
+
+        items += 1;
+        items_per_sec += 1;
+
+        if sw.elapsed().as_secs() > 0 {
+            println!("total {items}, per sec {items_per_sec}");
+            sw = Instant::now();
+            items_per_sec = 0;
+        }
+    }
+
+    insert.end().await.unwrap();
+
+    let _to_save = string_map;
 }
 
 fn cell_index_to_num(c: CellIndex) -> u64 {
     c.into()
 }
 
-fn ingest_into_sled() {
-    let mut sw = Instant::now();
-    let db = sled::Config::new()
-        .mode(sled::Mode::LowSpace)
-        .path("zana.sled")
-        .cache_capacity(1_000_000)
-        .compression_factor(22)
-        .print_profile_on_drop(true)
-        .use_compression(true)
-        .open()
-        .unwrap();
-
-    let cell_tree = db.open_tree("h3").unwrap();
-    let lat_lon_tree = db.open_tree("lat").unwrap();
-    let items = AtomicU64::new(0);
-   
-    osmobj("uusimaa.pbf")
-        .par_iter()
-        .chain(osmobj("berlin.pbf").par_iter())
-        .par_bridge()
-        .for_each(|o| {
-            match o.unwrap() {
-                OsmObj::Node(n) => {
-                    db
-                        .insert(
-                            n.id.0.to_le_bytes(),
-                            &cell_index_to_num(node_to_cell(&n, Resolution::Twelve)).to_le_bytes(),
-                        )
-                        .unwrap();
-
-                    let mut lat_lon = [0; 8];
-                    let (lat, lon) = lat_lon.split_at_mut(4);
-                    lat.swap_with_slice(&mut n.decimicro_lat.to_le_bytes());
-                    lon.swap_with_slice(&mut n.decimicro_lon.to_le_bytes());
-                    lat_lon_tree.insert(n.id.0.to_le_bytes(), &lat_lon).unwrap();
-                }
-                OsmObj::Way(_) => {}
-                OsmObj::Relation(_) => {}
-            }
-            let items = items.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if items % 100_000 == 0 {
-                println!("{items}")
-            }
-        });
-    db.flush().unwrap();
-}
-
 fn osmobj(fname: &str) -> OsmPbfReader<File> {
     OsmPbfReader::new(File::open(fname).unwrap())
-}
-
-fn ingest_into_sqlite() {
-    let rt = Runtime::new().unwrap();
-
-    let conn = rt.block_on(open_connection());
-
-    rt.block_on(async {
-        ingest_into_db(&conn, "uusimaa.pbf").await;
-        ingest_into_db(&conn, "berlin.pbf").await;
-    });
-}
-
-async fn open_connection() -> SqlitePool {
-    SqlitePool::connect("zana.db").await.unwrap()
-}
-
-async fn ingest_into_db(pool: &SqlitePool, fname: &str) {
-    let fname = fname.to_owned();
-    let (sender, mut recv) = tokio::sync::mpsc::channel(1024);
-    tokio::task::spawn_blocking(move || {
-        let mut reader = OsmPbfReader::new(std::fs::File::open(fname).unwrap());
-        for obj in reader.iter() {
-            sender.blocking_send(obj.unwrap()).unwrap();
-        }
-    });
-    let mut items = 0;
-    let mut start = Instant::now();
-
-    let mut trans = pool.begin().await.unwrap();
-    let mut trans_items = 0;
-    let commit_on = 1_000_000;
-
-    let mut last_sec_items = 0;
-    while let Some(d) = recv.recv().await {
-        if start.elapsed().as_secs() > 0 {
-            println!(
-                "inserted {items:>10} in {:.3?}, ~{} items per sec",
-                start.elapsed(),
-                last_sec_items
-            );
-            last_sec_items = 0;
-            start = Instant::now();
-        }
-        upsert_obj(d, &mut trans).await;
-        items += 1;
-        trans_items += 1;
-        last_sec_items += 1;
-        if trans_items >= commit_on {
-            trans.commit().await.unwrap();
-            trans = pool.begin().await.unwrap();
-            trans_items = 0;
-        }
-    }
-    trans.commit().await.unwrap();
-}
-
-async fn upsert_obj(o: OsmObj, t: &mut Transaction<'_, Sqlite>) {
-    match o {
-        OsmObj::Node(n) => {
-            let num: u64 = node_to_cell(&n, Resolution::try_from(12).unwrap()).into();
-            let cell_id = i64::from_le_bytes(num.to_le_bytes());
-
-            sqlx::query!(
-                "INSERT INTO nodes (
-                id,
-
-                decimicro_lat,
-                decimicro_lon,
-                cell12
-            ) VALUES (
-                ?1,
-
-                ?2,
-                ?3,
-
-                ?4
-            
-            ) ON CONFLICT DO UPDATE SET 
-                decimicro_lat = ?2,
-                decimicro_lon = ?3,
-                cell12=?4
-              
-            ",
-                n.id.0,
-                n.decimicro_lat,
-                n.decimicro_lon,
-                cell_id
-            )
-            .execute(&mut **t)
-            .await
-            .unwrap();
-        }
-        OsmObj::Way(_) => { /* todo */ }
-        OsmObj::Relation(..) => { /* todo */ }
-    }
 }
 
 fn time_loading_files() {
