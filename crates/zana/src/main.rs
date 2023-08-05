@@ -35,9 +35,23 @@ struct CHNode {
     tags: Vec<(u64, u64)>,
 }
 
+#[derive(Row, Serialize, Deserialize)]
+struct CHStringTableRow {
+    id: u64,
+    string: String,
+}
+
 async fn ingest_into_clickhouse() {
     let client = Client::default().with_url("http://localhost:8123");
-    let mut string_map = HashMap::<String, u64>::new();
+    let mut string_map: HashMap<String, u64> = client
+        .query("select ?fields from string_table")
+        .fetch_all::<CHStringTableRow>()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|CHStringTableRow { id, string }| (string, id))
+        .collect();
+    let mut new_interns = vec![];
 
     let mut intern = |s: &str| {
         let next_idx = string_map.len() as u64 + 1;
@@ -45,6 +59,10 @@ async fn ingest_into_clickhouse() {
             Some(n) => *n,
             None => {
                 string_map.insert(s.to_string(), next_idx);
+                new_interns.push(CHStringTableRow {
+                    string: s.to_string(),
+                    id: next_idx,
+                });
                 next_idx
             }
         }
@@ -93,8 +111,11 @@ async fn ingest_into_clickhouse() {
     }
 
     insert.end().await.unwrap();
-
-    let _to_save = string_map;
+    let mut insert = client.insert("string_table").unwrap();
+    for r in new_interns {
+        insert.write(&r).await.unwrap()
+    }
+    insert.end().await.unwrap();
 }
 
 fn cell_index_to_num(c: CellIndex) -> u64 {
