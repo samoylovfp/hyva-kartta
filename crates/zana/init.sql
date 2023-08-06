@@ -14,7 +14,6 @@ CREATE TABLE paths (
     id Int64 CODEC(T64, LZ4HC),
     nodes Array(Int64) CODEC(Delta, LZ4HC),
     tags Map(UInt64, UInt64) CODEC(T64, LZ4HC)
-    INDEX node_ids nodes TYPE Set(0)
 ) ENGINE = ReplacingMergeTree()
 ORDER BY id
 

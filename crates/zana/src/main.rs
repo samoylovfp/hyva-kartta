@@ -3,6 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufReader, Read, Write},
     path::PathBuf,
+    str::FromStr,
     time::Instant,
 };
 
@@ -20,12 +21,23 @@ use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTran
 use tokio::runtime::Runtime;
 
 fn main() {
-    // ingest_into_sqlite();
-    Runtime::new().unwrap().block_on(ingest_into_clickhouse(&[
-        "saint_petersburg.pbf",
-        "berlin.pbf",
-        "uusimaa.pbf",
-    ]));
+    let rt = Runtime::new().unwrap();
+    // rt.block_on(ingest_into_clickhouse(&[
+    //     "saint_petersburg.pbf",
+    //     "berlin.pbf",
+    //     "uusimaa.pbf",
+    // ]));
+
+    let child = CellIndex::from_str("851126d3fffffff")
+        .unwrap()
+        .children(Resolution::Eight)
+        .next()
+        .unwrap();
+
+    rt.block_on(zana_file_from_ch_tile(
+        &Client::default().with_url("http://localhost:8123"),
+        child,
+    ));
 }
 
 #[derive(Row, Serialize, Deserialize)]
@@ -60,7 +72,7 @@ impl StringTable {
     async fn fetch(client: &Client) -> Self {
         StringTable {
             string_map: client
-                .query("select ?fields from string_table")
+                .query("SELECT ?fields from string_table")
                 .fetch_all::<CHStringTableRow>()
                 .await
                 .unwrap()
@@ -572,16 +584,103 @@ fn read_zana_data(fname: &str) -> Vec<ZanaObj> {
     result
 }
 
-async fn zana_file_from_ch_tile(client: &Client, tile: u64) {
-    todo!()
+async fn zana_file_from_ch_tile(client: &Client, cell: CellIndex) {
+    let sw = Instant::now();
+
     // let f = FrameEncoder::new(File::create(format!("h3/{tile}.zan")).unwrap());
 
-    // let nodes = client
-    //     .query("select ?fields from nodes where h3ToParent(cell12, 6) == ?")
-    //     .bind(tile)
-    //     .fetch_all::<CHNode>()
+    let cell3 = cell.parent(Resolution::Three).unwrap();
+    let cell3_num: u64 = cell3.into();
+
+    let cell_num: u64 = cell.into();
+    let res: u8 = cell.resolution().into();
+    // get nodes in cell
+    // get paths that touch these nodes
+    // get nodes in cell and in paths
+
+    println!("Querying paths");
+    let paths: Vec<CHPath> = client
+        .query(
+            "
+                WITH 
+                nodes_inside AS (
+                    SELECT id as node_ids FROM nodes WHERE h3ToParent(cell12, ?) == ? AND cell3 == ?
+                )
+                SELECT ?fields FROM paths WHERE id in (
+                    SELECT id from paths WHERE arrayJoin(nodes) in (select node_ids from nodes_inside)
+                )
+            ",
+        )
+        .bind(res)
+        .bind(cell_num)
+        .bind(cell3_num)
+        .fetch_all()
+        .await
+        .unwrap();
+
+    println!("Querying nodes");
+    let nodes: Vec<CHNode> = client
+        .query(
+            "
+                WITH 
+                nodes_inside AS (
+                    SELECT id as node_ids FROM nodes WHERE h3ToParent(cell12, ?) == ? AND cell3 == ?
+                ),
+                paths_inside AS (
+                    SELECT id FROM paths WHERE 
+                        arrayJoin(nodes) in (select node_ids from nodes_inside)
+                )
+                SELECT ?fields from nodes where id IN (
+                    SELECT arrayJoin(nodes) FROM paths WHERE id IN (SELECT id FROM paths_inside)
+                )
+            ",
+        )
+        .bind(res)
+        .bind(cell_num)
+        .bind(cell3_num)
+        .fetch_all()
+        .await
+        .unwrap();
+
+    let mut missing_nodes = HashSet::new();
+    let node_ids = nodes.iter().map(|n| n.id).collect::<HashSet<_>>();
+    for p in &paths {
+        for node in &p.nodes {
+            if !node_ids.contains(&node) {
+                missing_nodes.insert(node);
+            }
+        }
+    }
+
+    // let query = client
+    //     .query(
+    //         &"SELECT ?fields FROM nodes WHERE h3ToParent(cell12, ?) == ? AND cell3 == ?"
+    //             .to_string(),
+    //     )
+    //     .bind(res)
+    //     .bind(tile_num)
+    //     .bind(parent_tile_num);
+
+    // let nodes = query.fetch_all::<CHNode>().await.unwrap();
+    // let ids = nodes.iter().map(|n| n.id).collect_vec();
+    // let paths = client
+    //     .query(
+    //         "
+    // SELECT ?fields FROM paths WHERE id in
+    // ",
+    //     )
+    //     .bind(ids)
+    //     .fetch_all::<CHPath>()
     //     .await
     //     .unwrap();
-    // let paths = client.query("select ?fields from paths where ")
-    
+
+    println!("Read data in {:?}", sw.elapsed());
+    println!("{:#?}", missing_nodes.iter().take(50).collect_vec());
+
+    panic!(
+        "{} nodes and {} paths, missing {}",
+        nodes.len(),
+        paths.len(),
+        missing_nodes.len()
+    );
 }
