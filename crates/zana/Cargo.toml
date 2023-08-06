@@ -11,6 +11,7 @@ delta-encoding = "0.4.0"
 geo-types = "0.7.11"
 h3o = { version = "0.3.4", features = ["serde"] }
 itertools = "0.11.0"
+lz4_flex = "0.11.1"
 osmpbfreader = "0.16.0"
 rayon = "1.7.0"
 serde = { version = "1.0.180", features = ["derive"] }

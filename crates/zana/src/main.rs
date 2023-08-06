@@ -1,31 +1,34 @@
 use std::{
-    cell::{self, Cell},
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::{BufReader, Read, Write},
     path::PathBuf,
-    sync::{atomic::AtomicU64, mpsc::channel, Arc, Mutex},
     time::Instant,
 };
 
 use bincode::Options;
-use clickhouse::{Client, Row};
+use clickhouse::{insert::Insert, Client, Row};
 use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use delta_encoding::{DeltaDecoderExt, DeltaEncoderExt};
 use geo_types::Coord;
 use h3o::{CellIndex, LatLng, Resolution};
 use itertools::{izip, Itertools};
-use osmpbfreader::{blobs::result_blob_into_iter, Node, OsmObj, OsmPbfReader};
+use lz4_flex::frame::FrameEncoder;
+use osmpbfreader::{blobs::result_blob_into_iter, Node, OsmObj, OsmPbfReader, Way};
 use serde::{Deserialize, Serialize};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTransform};
 use tokio::runtime::Runtime;
 
 fn main() {
     // ingest_into_sqlite();
-    Runtime::new().unwrap().block_on(ingest_into_clickhouse());
+    Runtime::new().unwrap().block_on(ingest_into_clickhouse(&[
+        "saint_petersburg.pbf",
+        "berlin.pbf",
+        "uusimaa.pbf",
+    ]));
 }
 
-#[derive(Row, Serialize)]
+#[derive(Row, Serialize, Deserialize)]
 struct CHNode {
     id: i64,
     decimicro_lat: i32,
@@ -41,88 +44,117 @@ struct CHStringTableRow {
     string: String,
 }
 
-async fn ingest_into_clickhouse() {
-    let client = Client::default().with_url("http://localhost:8123");
-    let mut string_map: HashMap<String, u64> = client
-        .query("select ?fields from string_table")
-        .fetch_all::<CHStringTableRow>()
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|CHStringTableRow { id, string }| (string, id))
-        .collect();
-    let mut new_interns = vec![];
+#[derive(Row, Serialize, Deserialize)]
+struct CHPath {
+    id: i64,
+    nodes: Vec<i64>,
+    tags: Vec<(u64, u64)>,
+}
 
-    let mut intern = |s: &str| {
-        let next_idx = string_map.len() as u64 + 1;
-        match string_map.get(s) {
+struct StringTable {
+    string_map: HashMap<String, u64>,
+    new_inserts: Vec<CHStringTableRow>,
+}
+
+impl StringTable {
+    async fn fetch(client: &Client) -> Self {
+        StringTable {
+            string_map: client
+                .query("select ?fields from string_table")
+                .fetch_all::<CHStringTableRow>()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|CHStringTableRow { id, string }| (string, id))
+                .collect(),
+            new_inserts: Vec::new(),
+        }
+    }
+
+    fn intern(&mut self, s: &str) -> u64 {
+        let next_idx = self.string_map.len() as u64 + 1;
+        match self.string_map.get(s) {
             Some(n) => *n,
             None => {
-                string_map.insert(s.to_string(), next_idx);
-                new_interns.push(CHStringTableRow {
+                self.string_map.insert(s.to_string(), next_idx);
+                self.new_inserts.push(CHStringTableRow {
                     string: s.to_string(),
                     id: next_idx,
                 });
                 next_idx
             }
         }
-    };
+    }
+}
 
-    let mut items = 0;
-    let mut items_per_sec = 0;
-    let mut sw = Instant::now();
+async fn ingest_into_clickhouse(files: &[&str]) {
+    let client = Client::default().with_url("http://localhost:8123");
+    let mut string_map = StringTable::fetch(&client).await;
 
-    let mut insert = client.insert("nodes").unwrap();
-    for obj in osmobj("uusimaa.pbf")
-        .par_iter()
-        .chain(osmobj("berlin.pbf").par_iter())
-    {
-        let obj = obj.unwrap();
-        let node = match obj {
-            OsmObj::Node(n) => n,
-            _ => continue,
-        };
-        let cell12 = node_to_cell(&node, Resolution::Twelve);
-        let cell3 = cell12.parent(Resolution::Three).unwrap();
-        insert
-            .write(&CHNode {
-                id: node.id.0,
-                decimicro_lat: node.decimicro_lat,
-                decimicro_lon: node.decimicro_lon,
-                cell12: cell_index_to_num(cell12),
-                cell3: cell_index_to_num(cell3),
-                tags: node
-                    .tags
-                    .iter()
-                    .map(|(k, v)| (intern(k), intern(v)))
-                    .collect(),
-            })
-            .await
-            .unwrap();
+    let mut node_inserter = client.insert("nodes").unwrap();
+    let mut path_inserter = client.insert("paths").unwrap();
 
-        items += 1;
-        items_per_sec += 1;
-
-        if sw.elapsed().as_secs() > 0 {
-            println!("total {items}, per sec {items_per_sec}");
-            sw = Instant::now();
-            items_per_sec = 0;
+    for fname in files {
+        for obj in osmobj(fname.to_string()).par_iter() {
+            let obj = obj.unwrap();
+            match obj {
+                OsmObj::Node(n) => insert_node(&mut node_inserter, &mut string_map, n).await,
+                OsmObj::Way(w) => insert_path(&mut path_inserter, &mut string_map, w).await,
+                _ => {}
+            };
         }
     }
 
-    insert.end().await.unwrap();
-    let mut insert = client.insert("string_table").unwrap();
-    for r in new_interns {
-        insert.write(&r).await.unwrap()
+    node_inserter.end().await.unwrap();
+    path_inserter.end().await.unwrap();
+
+    let mut string_inserter = client.insert("string_table").unwrap();
+    for r in string_map.new_inserts {
+        string_inserter.write(&r).await.unwrap()
     }
-    insert.end().await.unwrap();
+    string_inserter.end().await.unwrap();
+}
+
+async fn insert_node(node_insert: &mut Insert<CHNode>, string_table: &mut StringTable, node: Node) {
+    let cell12 = node_to_cell(&node, Resolution::Twelve);
+    let cell3 = cell12.parent(Resolution::Three).unwrap();
+    node_insert
+        .write(&CHNode {
+            id: node.id.0,
+            decimicro_lat: node.decimicro_lat,
+            decimicro_lon: node.decimicro_lon,
+            cell12: cell_index_to_num(cell12),
+            cell3: cell_index_to_num(cell3),
+            tags: node
+                .tags
+                .iter()
+                .map(|(k, v)| (string_table.intern(k), string_table.intern(v)))
+                .collect(),
+        })
+        .await
+        .unwrap();
+}
+
+async fn insert_path(path_insert: &mut Insert<CHPath>, string_table: &mut StringTable, way: Way) {
+    path_insert
+        .write(&CHPath {
+            id: way.id.0,
+            nodes: way.nodes.into_iter().map(|n| n.0).collect(),
+            tags: way
+                .tags
+                .iter()
+                .map(|(k, v)| (string_table.intern(&k), string_table.intern(&v)))
+                .collect(),
+        })
+        .await
+        .unwrap();
 }
 
 fn cell_index_to_num(c: CellIndex) -> u64 {
     c.into()
 }
 
-fn osmobj(fname: &str) -> OsmPbfReader<File> {
+fn osmobj(fname: String) -> OsmPbfReader<File> {
     OsmPbfReader::new(File::open(fname).unwrap())
 }
 
@@ -538,4 +570,18 @@ fn read_zana_data(fname: &str) -> Vec<ZanaObj> {
         }
     }
     result
+}
+
+async fn zana_file_from_ch_tile(client: &Client, tile: u64) {
+    todo!()
+    // let f = FrameEncoder::new(File::create(format!("h3/{tile}.zan")).unwrap());
+
+    // let nodes = client
+    //     .query("select ?fields from nodes where h3ToParent(cell12, 6) == ?")
+    //     .bind(tile)
+    //     .fetch_all::<CHNode>()
+    //     .await
+    //     .unwrap();
+    // let paths = client.query("select ?fields from paths where ")
+    
 }
