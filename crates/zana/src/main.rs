@@ -49,6 +49,14 @@ fn main() {
     if action == "TIME" {
         time_loading_files();
     }
+    if action == "CELL" {
+        let url = std::env::args().nth(2).unwrap();
+        let cell: CellIndex = url.parse().unwrap();
+        let ll: LatLng = cell.into();
+        let lat = ll.lat();
+        let lon = ll.lng();
+        println!("https://www.openstreetmap.org/#map=12/{lat}/{lon}")
+    }
 }
 
 fn dump_all_ch_to_zana_files(rt: &Runtime) {
@@ -313,13 +321,15 @@ pub fn draw_tile(tile_name: &str, output_fname: &str) {
 
     let mut building_style = PaintStyle::default();
     building_style.paint.set_color_rgba8(20, 100, 20, 255);
+    building_style.stroke.width = 2.0;
 
     let mut highway_style = PaintStyle::default();
     highway_style.paint.set_color_rgba8(255, 150, 20, 50);
+    highway_style.stroke.width = 2.0;
 
     let mut power_style = PaintStyle::default();
     power_style.paint.set_color_rgba8(10, 100, 255, 150);
-    power_style.stroke.width = 2.0;
+    power_style.stroke.width = 3.0;
 
     let merc_vertices = || {
         cell.vertexes().map(Into::into).map(|ll: LatLng| {
