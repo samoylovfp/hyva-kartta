@@ -1,10 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs::{File, OpenOptions},
-    io::{BufReader, Read, Write},
-    path::{Path, PathBuf},
+    fs::File,
+    io::BufReader,
+    path::PathBuf,
     process::exit,
-    str::FromStr,
     time::Instant,
 };
 
@@ -16,7 +15,7 @@ use geo_types::Coord;
 use h3o::{CellIndex, LatLng, Resolution};
 use itertools::{izip, Itertools};
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
-use osmpbfreader::{blobs::result_blob_into_iter, Node, OsmObj, OsmPbfReader, Way};
+use osmpbfreader::{Node, OsmObj, OsmPbfReader, Way};
 use serde::{Deserialize, Serialize};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTransform};
 use tokio::runtime::Runtime;
@@ -46,6 +45,9 @@ fn main() {
             let fname = path.file_name().unwrap().to_str().unwrap();
             draw_tile(path.to_str().unwrap(), &format!("drawings/{fname}.png"))
         }
+    }
+    if action == "TIME" {
+        time_loading_files();
     }
 }
 
@@ -224,7 +226,7 @@ fn time_loading_files() {
     let sw_total = Instant::now();
     for f in std::fs::read_dir("h3").unwrap() {
         let f = f.unwrap();
-        if f.path().extension().and_then(|e| e.to_str()) == Some("h3z") {
+        if f.path().extension().and_then(|e| e.to_str()) == Some("zan") {
             read_zana_data(f.path().to_str().unwrap());
         }
     }
@@ -274,172 +276,6 @@ struct ZanaDensePaths {
     /// (key_i, val_i)*, 0
     tags: Vec<u64>,
 }
-
-// fn append_data_to_file(cell: CellIndex, data: &ZanaDenseData) {
-//     let encoded = bincode::DefaultOptions::new().serialize(data).unwrap();
-
-//     let mut f = std::fs::OpenOptions::new()
-//         .create(true)
-//         .append(true)
-//         .open(format!("h3/{cell}.h3z"))
-//         .unwrap();
-//     let len: u32 = encoded.len().try_into().unwrap();
-//     f.write_all(&len.to_le_bytes()).unwrap();
-//     f.write_all(&encoded).unwrap();
-// }
-
-struct ZanaStringTable {
-    next_free_idx: u32,
-    strings: HashMap<String, u32>,
-}
-
-impl Default for ZanaStringTable {
-    fn default() -> Self {
-        Self {
-            next_free_idx: 1,
-            strings: Default::default(),
-        }
-    }
-}
-
-impl ZanaStringTable {
-    fn intern(&mut self, s: &str) -> u32 {
-        match self.strings.get(s) {
-            Some(i) => *i,
-            None => {
-                let res = self.next_free_idx;
-                self.strings.insert(s.to_string(), self.next_free_idx);
-                self.next_free_idx = self.next_free_idx.checked_add(1).expect("Table is full");
-                res
-            }
-        }
-    }
-}
-
-/// it basically repeats the format of osm pbf but uses bincode instead of protobuf
-// pub fn recompress_pbf() {
-//     let h3_dir = PathBuf::from("h3");
-//     let h3_dir_backup = PathBuf::from("h3_old");
-//     if h3_dir.exists() {
-//         _ = std::fs::remove_dir_all(&h3_dir_backup);
-//         std::fs::rename(&h3_dir, &h3_dir_backup).unwrap();
-//     }
-
-//     std::fs::create_dir(&h3_dir).unwrap();
-//     let mut sw = Instant::now();
-
-//     // FIXME: these maps are per-file, we need to make them per-blob
-//     let mut node_ids: HashMap<i64, CellIndex> = HashMap::new();
-//     let mut string_table = ZanaStringTable::default();
-
-//     let mut f = OsmPbfReader::new(File::open("uusimaa.pbf").unwrap());
-//     for blob in f.blobs() {
-//         let blob = blob.unwrap();
-//         let mut cells_to_nodes: HashMap<CellIndex, Vec<Node>> = HashMap::new();
-//         // FIXME: check all unwraps, api might sometimes return err on icompatible data,
-//         //        zana needs to skip incompatible blocks
-//         // TODO: iter only over nodes, should speed up conversion process
-//         for obj in result_blob_into_iter(Ok(blob)) {
-//             let obj = obj.unwrap();
-//             match obj {
-//                 OsmObj::Node(n) => {
-//                     let cell = node_to_cell(&n, Resolution::Five);
-//                     assert!(node_ids.insert(n.id.0, cell).is_none());
-//                     cells_to_nodes.entry(cell).or_default().push(n);
-//                 }
-//                 _ => {}
-//             }
-//         }
-//         println!("Sorted blob in {:?}", sw.elapsed());
-//         sw = Instant::now();
-
-//         // for (cell, mut nodes) in cells_to_nodes {
-//         //     nodes.sort_by_key(|n| n.id.0);
-//         //     let node_ids_deltas: Vec<i64> = nodes.iter().map(|n| n.id.0).deltas().collect();
-//         //     let node_lats_deltas: Vec<i32> =
-//         //         nodes.iter().map(|n| n.decimicro_lat).deltas().collect();
-//         //     let node_lons_deltas: Vec<i32> =
-//         //         nodes.iter().map(|n| n.decimicro_lon).deltas().collect();
-
-//         //     let data_for_serialization = ZanaDenseData::Nodes(ZanaDenseNodes {
-//         //         dids: node_ids_deltas,
-//         //         dlats: node_lats_deltas,
-//         //         dlons: node_lons_deltas,
-//         //     });
-
-//         //     append_data_to_file(cell, &data_for_serialization)
-//         // }
-//         // println!("Written files in {:?}", sw.elapsed());
-//         // sw = Instant::now();
-//     }
-
-//     f.rewind().unwrap();
-//     sw = Instant::now();
-
-//     let mut cells_to_ways = HashMap::new();
-//     for blob in f.blobs() {
-//         let blob = blob.unwrap();
-
-//         for obj in result_blob_into_iter(Ok(blob)) {
-//             let obj = obj.unwrap();
-//             match obj {
-//                 OsmObj::Way(w) => {
-//                     let cells_for_way: HashSet<_> = w
-//                         .nodes
-//                         .iter()
-//                         .filter_map(|n| node_ids.get(&n.0).copied())
-//                         .collect();
-
-//                     for c in cells_for_way {
-//                         cells_to_ways
-//                             .entry(c)
-//                             .or_insert_with(|| vec![])
-//                             .push(w.clone());
-//                     }
-//                 }
-//                 _ => {}
-//             }
-//         }
-//         println!("Ways from one blob processed in {:?}", sw.elapsed());
-//         sw = Instant::now();
-//     }
-
-//     // for (cell, ways) in cells_to_ways {
-//     //     let dids = ways.iter().map(|w| w.id.0).deltas().collect_vec();
-//     //     let dnodes = ways
-//     //         .iter()
-//     //         .map(|w| w.nodes.iter().map(|n| n.0).deltas().collect_vec())
-//     //         .collect_vec();
-//     //     let mut tags = vec![];
-
-//     //     for w in ways.iter() {
-//     //         for (k, v) in w.tags.iter() {
-//     //             tags.push(string_table.intern(&k));
-//     //             tags.push(string_table.intern(&v));
-//     //         }
-//     //         tags.push(0)
-//     //     }
-//     //     // remove last 0
-//     //     if tags.len() > 0 {
-//     //         tags.pop();
-//     //     }
-
-//     //     let data = ZanaDenseData::Paths(ZanaDensePaths { dids, dnodes, tags });
-//     //     append_data_to_file(cell, &data);
-//     // }
-
-//     let f = OpenOptions::new()
-//         .create(true)
-//         .write(true)
-//         .open(h3_dir.join("stringtable.binc"))
-//         .unwrap();
-//     let mut sorted_strings = string_table.strings.into_iter().collect_vec();
-//     sorted_strings.sort_by_key(|(_, k)| *k);
-//     let sorted_strings = sorted_strings.into_iter().map(|(k, _)| k).collect_vec();
-//     bincode::DefaultOptions::new()
-//         .serialize_into(f, &sorted_strings)
-//         .unwrap();
-// }
 
 pub fn draw_tile(tile_name: &str, output_fname: &str) {
     let (string_table, zana_data) = read_zana_data(tile_name);
