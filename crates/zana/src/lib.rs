@@ -211,7 +211,6 @@ fn draw_path(
         let coords = transform(node.0, node.1);
         pb.line_to(coords.0 as f32, coords.1 as f32);
     }
-    log::info!("{:?}", pb);
     if let Some(p) = pb.finish() {
         pixmap.stroke_path(&p, &paint, &stroke, SkiaTransform::identity(), None);
     }
