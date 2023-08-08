@@ -10,6 +10,7 @@ delta-encoding = "0.4.0"
 geo-types = "0.7.11"
 h3o = { version = "0.3.4", features = ["serde"] }
 itertools = "0.11.0"
+log = "0.4.19"
 lz4_flex = "0.11.1"
 serde = { version = "1.0.180", features = ["derive"] }
 tiny-skia = "0.11.1"

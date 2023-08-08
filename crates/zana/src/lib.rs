@@ -6,15 +6,15 @@ use std::{
 };
 
 use bincode::Options;
-use d3_geo_rs::{projection::mercator::Mercator, Transform as _};
+pub use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use delta_encoding::DeltaDecoderExt;
-use geo_types::Coord;
+pub use geo_types::Coord;
 use itertools::{izip, Itertools};
 use lz4_flex::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 
 pub use h3o::{CellIndex, LatLng, Resolution};
-use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTransform};
 
 #[derive(Debug, Clone)]
 pub struct Path {
@@ -93,16 +93,12 @@ impl<'s> Path {
     }
 }
 
-pub fn draw_tile(tile_name: &str, output_fname: &str) {
-    let (string_table, zana_data) = read_zana_data(BufReader::new(File::open(tile_name).unwrap()));
-
-    let cell: CellIndex = PathBuf::from(tile_name)
-        .file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .parse()
-        .unwrap();
+pub fn draw_tile(
+    pixmap: &mut Pixmap,
+    data: &[u8],
+    (min_x, max_x, min_y, max_y): (f64, f64, f64, f64),
+) {
+    let (string_table, zana_data) = read_zana_data(data);
 
     let proj = Mercator::default();
 
@@ -139,37 +135,15 @@ pub fn draw_tile(tile_name: &str, output_fname: &str) {
     power_style.paint.set_color_rgba8(10, 100, 255, 150);
     power_style.stroke.width = 3.0;
 
-    let merc_vertices = || {
-        cell.vertexes().map(Into::into).map(|ll: LatLng| {
-            let coord = proj.transform(&Coord {
-                x: ll.lng_radians(),
-                y: -ll.lat_radians(),
-            });
-            (coord.x, coord.y)
-        })
-    };
+    let x_span = max_x - min_x;
+    let y_span = max_y - min_y;
 
-    let (min_y, max_y) = merc_vertices()
-        .map(|(_x, y)| y)
-        .minmax()
-        .into_option()
-        .unwrap();
-    let (min_x, max_x) = merc_vertices()
-        .map(|(x, _y)| x)
-        .minmax()
-        .into_option()
-        .unwrap();
-
-    let x_span = (max_x - min_x) as f64;
-    let y_span = (max_y - min_y) as f64;
-
-    let x_size = 1024;
+    let x_size = pixmap.width();
     let y_size = (x_size as f64 / x_span * y_span) as u32;
 
     let x_scale = x_size as f64 / x_span;
     let y_scale = y_size as f64 / y_span;
 
-    let mut pixmap = Pixmap::new(x_size, y_size).unwrap();
     pixmap.fill(Color::BLACK);
     fn has_tag(p: &ZanaPath, tag: u64) -> bool {
         p.tags.iter().find(|(k, _)| *k == tag).is_some()
@@ -190,7 +164,7 @@ pub fn draw_tile(tile_name: &str, output_fname: &str) {
                 }
                 if let Some(s) = style {
                     draw_path(
-                        &mut pixmap,
+                        pixmap,
                         &p,
                         &node_id_hashmap,
                         (min_x, min_y),
@@ -201,7 +175,6 @@ pub fn draw_tile(tile_name: &str, output_fname: &str) {
             }
         }
     }
-    pixmap.save_png(output_fname).unwrap();
 }
 
 #[derive(Default)]
@@ -238,9 +211,9 @@ fn draw_path(
         let coords = transform(node.0, node.1);
         pb.line_to(coords.0 as f32, coords.1 as f32);
     }
-
+    log::info!("{:?}", pb);
     if let Some(p) = pb.finish() {
-        pixmap.stroke_path(&p, &paint, &stroke, Transform::identity(), None);
+        pixmap.stroke_path(&p, &paint, &stroke, SkiaTransform::identity(), None);
     }
 }
 

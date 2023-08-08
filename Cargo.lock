@@ -123,6 +123,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base64"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "604178f6c5c21f02dc555784810edfb88d34ac2c73b2eae109655649ee73ce3d"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -351,18 +357,6 @@ checksum = "0812b44697951d35fde8fcb0da81c9de7e809e825a66bbf1ecb79d9829d4ca3d"
 dependencies = [
  "itertools 0.10.5",
  "num-traits",
-]
-
-[[package]]
-name = "eframe_template"
-version = "0.1.0"
-dependencies = [
- "gloo 0.9.0",
- "idb",
- "log",
- "wasm-bindgen-futures",
- "yew",
- "zana",
 ]
 
 [[package]]
@@ -852,9 +846,9 @@ dependencies = [
 
 [[package]]
 name = "h3o"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae5a7fd66d13fcbcb9609e1a2978bb778e773391e17bcec9085ac860e307a07b"
+checksum = "ae33fa2e1c18782052773efdae355803351807ff96f1cf5d599106cd18563bf1"
 dependencies = [
  "ahash",
  "auto_ops",
@@ -947,6 +941,24 @@ name = "httpdate"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4a1e36c821dbe04574f602848a19f742f4fb3c98d40449f11bcad18d6b17421"
+
+[[package]]
+name = "hyka"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "gloo 0.9.0",
+ "idb",
+ "itertools 0.11.0",
+ "log",
+ "tiny-skia",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-logger",
+ "web-sys",
+ "yew",
+ "zana",
+]
 
 [[package]]
 name = "hyper"
@@ -2160,6 +2172,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca6ad05a4870b2bf5fe995117d3728437bd27d7cd5f06f13c17443ef369775a1"
 
 [[package]]
+name = "wasm-logger"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "074649a66bb306c8f2068c9016395fa65d8e08d2affcbf95acf3c24c3ab19718"
+dependencies = [
+ "log",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2316,6 +2339,7 @@ dependencies = [
  "geo-types",
  "h3o",
  "itertools 0.11.0",
+ "log",
  "lz4_flex",
  "serde",
  "tiny-skia",

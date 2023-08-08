@@ -1,6 +1,6 @@
-use idb::{Database, Error, Factory, ObjectStoreParams, KeyPath, IndexParams};
+use idb::{Database, Error, Factory, IndexParams, KeyPath, ObjectStoreParams};
 
-async fn create_database() -> Result<Database, Error> {
+pub async fn create_database() -> Result<Database, Error> {
     // Get a factory instance from global scope
     let factory = Factory::new()?;
 
@@ -13,23 +13,10 @@ async fn create_database() -> Result<Database, Error> {
         let database = event.database().unwrap();
 
         // Prepare object store params
-        let mut store_params = ObjectStoreParams::new();
-        store_params.auto_increment(true);
-        store_params.key_path(Some(KeyPath::new_single("id")));
+        let store_params = ObjectStoreParams::new();
 
         // Create object store
-        let store = database
-            .create_object_store("employees", store_params)
-            .unwrap();
-
-        // Prepare index params
-        let mut index_params = IndexParams::new();
-        index_params.unique(true);
-
-        // Create index on object store
-        store
-            .create_index("email", KeyPath::new_single("email"), Some(index_params))
-            .unwrap();
+        let store = database.create_object_store("cells", store_params).unwrap();
     });
 
     // `await` open request
