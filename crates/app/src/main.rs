@@ -23,6 +23,15 @@ struct App {
     html_size: (u32, u32),
     downloaded_files: HashMap<String, Vec<u8>>,
     _resize_listener: EventListener,
+    rendering_tile: usize,
+}
+
+impl App {
+    fn draw_selected_cell(&self) {
+        if let Some((cell, data)) = self.downloaded_files.iter().nth(self.rendering_tile) {
+            draw_cell(cell, data, &self.canvas)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -30,6 +39,7 @@ enum Msg {
     Resized,
     DownloadedFile(String, Vec<u8>),
     ReadFiles(HashMap<String, Vec<u8>>),
+    Next,
 }
 
 fn get_body_size() -> (u32, u32) {
@@ -61,6 +71,7 @@ impl Component for App {
             canvas: NodeRef::default(),
             html_size: get_body_size(),
             _resize_listener: resize_listener,
+            rendering_tile: 0,
         }
     }
 
@@ -69,9 +80,8 @@ impl Component for App {
         match msg {
             Msg::Resized => {
                 self.html_size = get_body_size();
-                if let Some((cell, data)) = self.downloaded_files.iter().next() {
-                    draw_cell(cell, data, &self.canvas)
-                }
+                // FIXME: this should happen after "rendered"
+                self.draw_selected_cell();
             }
             Msg::DownloadedFile(file, contents) => {
                 self.downloaded_files.insert(file.clone(), contents.clone());
@@ -86,10 +96,15 @@ impl Component for App {
                             .callback(|(file, data)| Msg::DownloadedFile(file, data)),
                     );
                 } else {
-                    if let Some((cell, data)) = self.downloaded_files.iter().next() {
-                        draw_cell(cell, data, &self.canvas)
-                    }
+                    self.draw_selected_cell();
                 }
+            }
+            Msg::Next => {
+                self.rendering_tile += 1;
+                if self.rendering_tile > self.downloaded_files.len().saturating_sub(1) {
+                    self.rendering_tile = 0;
+                }
+                self.draw_selected_cell();
             }
         }
         true
@@ -103,6 +118,7 @@ impl Component for App {
                 ref={&self.canvas}
                 width={width.to_string()}
                 height={height.to_string()}
+                onclick={ctx.link().callback(|_|Msg::Next)}
             ></canvas>
             </>
         }
