@@ -1,22 +1,26 @@
-use std::{collections::HashMap, path::PathBuf, io::BufReader};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufReader, Read},
+    path::PathBuf,
+};
 
 use bincode::Options;
 use d3_geo_rs::{projection::mercator::Mercator, Transform as _};
 use delta_encoding::DeltaDecoderExt;
 use geo_types::Coord;
-use itertools::{Itertools, izip};
+use itertools::{izip, Itertools};
 use lz4_flex::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 
-pub use h3o::{LatLng, CellIndex, Resolution};
-use tiny_skia::{Pixmap, Color, Paint, Stroke, PathBuilder, Transform};
+pub use h3o::{CellIndex, LatLng, Resolution};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 #[derive(Debug, Clone)]
 pub struct Path {
     pub points: Vec<(i32, i32)>,
     // tags: HashMap<String, String>,
 }
-
 
 #[derive(Serialize, Deserialize)]
 pub struct ZanaDenseData {
@@ -58,7 +62,6 @@ pub struct ZanaDensePaths {
     pub tags: Vec<u64>,
 }
 
-
 /// useful for varint encoding
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RelativePath {
@@ -91,7 +94,7 @@ impl<'s> Path {
 }
 
 pub fn draw_tile(tile_name: &str, output_fname: &str) {
-    let (string_table, zana_data) = read_zana_data(tile_name);
+    let (string_table, zana_data) = read_zana_data(BufReader::new(File::open(tile_name).unwrap()));
 
     let cell: CellIndex = PathBuf::from(tile_name)
         .file_stem()
@@ -241,10 +244,9 @@ fn draw_path(
     }
 }
 
-pub fn read_zana_data(fname: &str) -> (HashMap<String, u64>, Vec<ZanaObj>) {
-    println!("Reading {fname}");
+pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
     let mut result = vec![];
-    let bufreader = FrameDecoder::new(BufReader::new(std::fs::File::open(fname).unwrap()));
+    let bufreader = FrameDecoder::new(r);
     let ZanaDenseData {
         nodes,
         paths,

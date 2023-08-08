@@ -1,55 +1,66 @@
-use std::{process::exit, collections::{HashMap, HashSet}, fs::File, time::Instant};
+mod server;
+
 use bincode::Options;
-use clickhouse::{Client, Row, insert::Insert};
+use clickhouse::{insert::Insert, Client, Row};
+use delta_encoding::DeltaEncoderExt;
 use itertools::Itertools;
 use lz4_flex::frame::FrameEncoder;
-use osmpbfreader::{OsmObj, Node, Way, OsmPbfReader};
-use serde::{Serialize, Deserialize};
+use osmpbfreader::{Node, OsmObj, OsmPbfReader, Way};
+use serde::{Deserialize, Serialize};
+use server::serve;
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::BufReader,
+    process::exit,
+    time::Instant,
+};
 use tokio::runtime::Runtime;
-use zana::{LatLng, CellIndex, draw_tile, Resolution, read_zana_data, ZanaDenseNodes, ZanaDenseData, ZanaDensePaths};
-use delta_encoding::DeltaEncoderExt;
+use zana::{
+    draw_tile, read_zana_data, CellIndex, LatLng, Resolution, ZanaDenseData, ZanaDenseNodes,
+    ZanaDensePaths,
+};
 
 fn main() {
-    
-    let rt = Runtime::new().unwrap();
-    let action = std::env::args().skip(1).next().unwrap_or_else(|| {
-        println!("Pass an action, INGEST, DUMP, or DRAW");
-        exit(1)
-    });
-    if action == "INGEST" {
-        rt.block_on(ingest_into_clickhouse(&[
-            "saint_petersburg.pbf",
-            "berlin.pbf",
-            "uusimaa.pbf",
-        ]));
-    }
+    serve();
 
-    if action == "DUMP" {
-        dump_all_ch_to_zana_files(&rt)
-    }
+    // let rt = Runtime::new().unwrap();
+    // let action = std::env::args().skip(1).next().unwrap_or_else(|| {
+    //     println!("Pass an action, INGEST, DUMP, or DRAW");
+    //     exit(1)
+    // });
+    // if action == "INGEST" {
+    //     rt.block_on(ingest_into_clickhouse(&[
+    //         "saint_petersburg.pbf",
+    //         "berlin.pbf",
+    //         "uusimaa.pbf",
+    //     ]));
+    // }
 
-    if action == "DRAW" {
-        _ = std::fs::create_dir("drawings");
-        for file in std::fs::read_dir("h3").unwrap() {
-            let path = file.unwrap().path();
-            let fname = path.file_name().unwrap().to_str().unwrap();
-            draw_tile(path.to_str().unwrap(), &format!("drawings/{fname}.png"))
-        }
-    }
-    if action == "TIME" {
-        time_loading_files();
-    }
-    if action == "CELL" {
-        let url = std::env::args().nth(2).unwrap();
-        let cell: CellIndex = url.parse().unwrap();
-        let ll: LatLng = cell.into();
-        let lat = ll.lat();
-        let lon = ll.lng();
-        println!("https://www.openstreetmap.org/#map=12/{lat}/{lon}")
-    }
+    // if action == "DUMP" {
+    //     dump_all_ch_to_zana_files(&rt)
+    // }
+
+    // if action == "DRAW" {
+    //     _ = std::fs::create_dir("drawings");
+    //     for file in std::fs::read_dir("h3").unwrap() {
+    //         let path = file.unwrap().path();
+    //         let fname = path.file_name().unwrap().to_str().unwrap();
+    //         draw_tile(path.to_str().unwrap(), &format!("drawings/{fname}.png"))
+    //     }
+    // }
+    // if action == "TIME" {
+    //     time_loading_files();
+    // }
+    // if action == "CELL" {
+    //     let url = std::env::args().nth(2).unwrap();
+    //     let cell: CellIndex = url.parse().unwrap();
+    //     let ll: LatLng = cell.into();
+    //     let lat = ll.lat();
+    //     let lon = ll.lng();
+    //     println!("https://www.openstreetmap.org/#map=12/{lat}/{lon}")
+    // }
 }
-
-
 
 fn dump_all_ch_to_zana_files(rt: &Runtime) {
     let client = Client::default().with_url("http://localhost:8123");
@@ -72,7 +83,6 @@ fn dump_all_ch_to_zana_files(rt: &Runtime) {
         rt.block_on(zana_file_from_ch_tile(&client, cell));
     }
 }
-
 
 const MAX_NODES_PER_CELL: u64 = 100_000;
 const MIN_RESOLUTION: Resolution = Resolution::Twelve;
@@ -228,7 +238,7 @@ fn time_loading_files() {
     for f in std::fs::read_dir("h3").unwrap() {
         let f = f.unwrap();
         if f.path().extension().and_then(|e| e.to_str()) == Some("zan") {
-            read_zana_data(f.path().to_str().unwrap());
+            read_zana_data(BufReader::new(File::open(f.path()).unwrap()));
         }
     }
     println!("Read all files in {:?}", sw_total.elapsed());
@@ -237,7 +247,6 @@ fn time_loading_files() {
 fn node_to_cell(n: &Node, res: Resolution) -> CellIndex {
     LatLng::new(n.lat(), n.lon()).unwrap().to_cell(res)
 }
-
 
 async fn zana_file_from_ch_tile(client: &Client, cell: CellIndex) {
     let sw = Instant::now();

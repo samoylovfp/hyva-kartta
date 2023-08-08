@@ -1,6 +1,28 @@
-#![warn(clippy::all, rust_2018_idioms)]
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+use yew::{html, Component};
+use zana::read_zana_data;
 
+struct App {
+    x: f32,
+    y: f32,
+}
+
+impl Component for App {
+    type Message = ();
+
+    type Properties = ();
+
+    fn create(ctx: &yew::Context<Self>) -> Self {
+        App { x: 10.0, y: 10.0 }
+    }
+
+    fn view(&self, ctx: &yew::Context<Self>) -> yew::Html {
+        html! {
+            <>
+            <canvas id="map"></canvas>
+            </>
+        }
+    }
+}
 fn main() {
-    todo!()
+    yew::Renderer::<App>::new().render();
 }

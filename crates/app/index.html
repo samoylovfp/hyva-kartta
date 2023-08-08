@@ -10,7 +10,7 @@
     <title>Hyvä Kartta</title>
 
     <!-- config for our rust wasm binary. go to https://trunkrs.dev/assets/#rust for more customization -->
-    <link data-trunk rel="rust" data-wasm-opt="2"/>
+    <link data-trunk rel="rust" data-wasm-opt="2" />
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
 
@@ -52,7 +52,8 @@
 
         /* Allow canvas to fill entire web page: */
         html,
-        body {
+        body,
+        canvas {
             overflow: hidden;
             margin: 0 !important;
             padding: 0 !important;
@@ -62,13 +63,9 @@
 
         /* Position canvas in center-top: */
         canvas {
-            margin-right: auto;
-            margin-left: auto;
             display: block;
             position: absolute;
-            top: 0%;
-            left: 50%;
-            transform: translate(-50%, 0%);
+            z-index: -1;
         }
 
         .centered {
@@ -114,7 +111,6 @@
                 transform: rotate(360deg);
             }
         }
-
     </style>
 </head>
 
