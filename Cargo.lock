@@ -951,6 +951,7 @@ dependencies = [
  "idb",
  "itertools 0.11.0",
  "log",
+ "serde",
  "tiny-skia",
  "wasm-bindgen",
  "wasm-bindgen-futures",

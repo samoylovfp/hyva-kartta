@@ -3,43 +3,66 @@ use std::collections::HashMap;
 use base64::{prelude::BASE64_STANDARD_NO_PAD, Engine};
 use gloo::{
     events::EventListener,
-    utils::{body, format::JsValueSerdeExt, window},
+    utils::{body, document, format::JsValueSerdeExt, window},
 };
 use hyka::db::create_database;
 use idb::{Database, Query};
 use itertools::Itertools;
-use log::info;
+use log::{error, info};
+use serde::Deserialize;
 use tiny_skia::{Color, Pixmap};
-use wasm_bindgen::{Clamped, JsCast, JsValue};
+use wasm_bindgen::{prelude::Closure, Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
+use web_sys::{
+    CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageData, PositionOptions,
+};
 use yew::{html, Callback, Component, NodeRef};
-use zana::{draw_tile, CellIndex, Coord, Mercator, Transform};
+use zana::{draw_tile, CellIndex, Coord, LatLng, Mercator, Resolution, Transform};
 
 struct App {
-    x: f32,
-    y: f32,
+    lat: f32,
+    lon: f32,
     canvas: NodeRef,
     html_size: (u32, u32),
-    downloaded_files: HashMap<String, Vec<u8>>,
-    _resize_listener: EventListener,
-    rendering_tile: usize,
+    loaded_files: HashMap<String, Vec<u8>>,
 }
 
 impl App {
-    fn draw_selected_cell(&self) {
-        if let Some((cell, data)) = self.downloaded_files.iter().nth(self.rendering_tile) {
-            draw_cell(cell, data, &self.canvas)
+    async fn draw_selected_cell(lat: f32, lon: f32, canvas: NodeRef) {
+        let latlon = LatLng::new(lat as f64, lon as f64).unwrap();
+        let db = create_database().await.unwrap();
+        if let Some((cell, data)) = find_cell(&db, latlon).await {
+            draw_cell(cell, &data, &canvas)
         }
     }
+}
+
+async fn find_cell(db: &Database, coord: LatLng) -> Option<(CellIndex, Vec<u8>)> {
+    let mut res = Resolution::Twelve;
+    let tr = db
+        .transaction(&["cells"], idb::TransactionMode::ReadOnly)
+        .unwrap();
+    let store = tr.object_store("cells").unwrap();
+    while res >= Resolution::Three {
+        info!("{res}");
+        let cell = coord.to_cell(res);
+        let key = format!("{cell}.zan");
+        if let Some(o) = store.get(Query::Key(key.into())).await.unwrap() {
+            let s = o.as_string().unwrap();
+            return Some((cell, BASE64_STANDARD_NO_PAD.decode(s).unwrap()));
+        }
+        res = res.pred().unwrap();
+    }
+    None
 }
 
 #[derive(Debug)]
 enum Msg {
     Resized,
-    DownloadedFile(String, Vec<u8>),
+    DownloadedFiles,
     ReadFiles(HashMap<String, Vec<u8>>),
-    Next,
+    Repaint,
+    GeoMoved(MovedEvent),
 }
 
 fn get_body_size() -> (u32, u32) {
@@ -50,61 +73,89 @@ fn get_body_size() -> (u32, u32) {
     )
 }
 
+#[derive(Debug, Deserialize)]
+struct MovedEvent {
+    lat: f32,
+    lon: f32,
+}
+
 impl Component for App {
     type Message = Msg;
 
     type Properties = ();
 
     fn create(ctx: &yew::Context<Self>) -> Self {
-        let event_emitter = ctx.link().callback(|_| Msg::Resized);
+        // spawn_local(async {
+        //     let db = create_database().await.unwrap();
+        //     let tr = db
+        //         .transaction(&["cells"], idb::TransactionMode::ReadWrite)
+        //         .unwrap();
+        //     let store = tr.object_store("cells").unwrap();
+        //     let keys = store.get_all_keys(None, None).await.unwrap();
+        //     for k in keys {
+        //         store.delete(Query::Key(k)).await.unwrap();
+        //     }
+        //     tr.commit().await.unwrap();
+        // });
+        let resize_callback = ctx.link().callback(|_| Msg::Resized);
         let resize_listener =
-            EventListener::new(&window(), "resize", move |_| event_emitter.emit(()));
+            EventListener::new(&window(), "resize", move |_| resize_callback.emit(()));
+        resize_listener.forget();
 
-        spawn_local(load_filed_from_indexeddb(
-            ctx.link().callback(|d| Msg::ReadFiles(d)),
-        ));
+        let files_loaded_callback = ctx.link().callback(Msg::ReadFiles);
+        spawn_local(async move {
+            files_loaded_callback.emit(load_files_from_indexeddb().await);
+        });
+
+        let move_callback = ctx.link().callback(Msg::GeoMoved);
+        let move_listener = EventListener::new(&document(), "geomove", move |e: &Event| {
+            let custom_event: &CustomEvent = e.dyn_ref().unwrap();
+            move_callback.emit(custom_event.detail().into_serde().unwrap())
+        });
+        move_listener.forget();
 
         App {
-            x: 10.0,
-            y: 10.0,
-            downloaded_files: HashMap::new(),
+            lat: 10.0,
+            lon: 10.0,
+            loaded_files: HashMap::new(),
             canvas: NodeRef::default(),
             html_size: get_body_size(),
-            _resize_listener: resize_listener,
-            rendering_tile: 0,
         }
     }
 
     fn update(&mut self, ctx: &yew::Context<Self>, msg: Self::Message) -> bool {
-        info!("{:?}", std::mem::discriminant(&msg));
+        info!("{msg:?}");
+        let repaint = ctx.link().callback(|()| Msg::Repaint);
         match msg {
             Msg::Resized => {
                 self.html_size = get_body_size();
-                // FIXME: this should happen after "rendered"
-                self.draw_selected_cell();
+                repaint.emit(());
             }
-            Msg::DownloadedFile(file, contents) => {
-                self.downloaded_files.insert(file.clone(), contents.clone());
+            Msg::DownloadedFiles => {
+                let files_loaded_callback = ctx.link().callback(Msg::ReadFiles);
+                spawn_local(async move {
+                    files_loaded_callback.emit(load_files_from_indexeddb().await);
+                });
             }
             // wasm_bindgen_futures::spawn_local( load_downloaded_files(&db, ctx.link().callback(|f| Msg::ReadFiles(f))));
             Msg::ReadFiles(f) => {
                 info!("Read {} files from db", f.len());
-                self.downloaded_files = f;
-                if self.downloaded_files.is_empty() {
-                    download_files(
-                        ctx.link()
-                            .callback(|(file, data)| Msg::DownloadedFile(file, data)),
-                    );
-                } else {
-                    self.draw_selected_cell();
+                self.loaded_files = f;
+                if self.loaded_files.is_empty() {
+                    download_files(ctx.link().callback(|_| Msg::DownloadedFiles));
                 }
             }
-            Msg::Next => {
-                self.rendering_tile += 1;
-                if self.rendering_tile > self.downloaded_files.len().saturating_sub(1) {
-                    self.rendering_tile = 0;
-                }
-                self.draw_selected_cell();
+            Msg::GeoMoved(p) => {
+                self.lat = p.lat;
+                self.lon = p.lon;
+                repaint.emit(());
+            }
+            Msg::Repaint => {
+                spawn_local(App::draw_selected_cell(
+                    self.lat,
+                    self.lon,
+                    self.canvas.clone(),
+                ));
             }
         }
         true
@@ -118,15 +169,14 @@ impl Component for App {
                 ref={&self.canvas}
                 width={width.to_string()}
                 height={height.to_string()}
-                onclick={ctx.link().callback(|_|Msg::Next)}
+                onclick={ctx.link().callback(|_|Msg::Repaint)}
             ></canvas>
             </>
         }
     }
 }
 
-fn draw_cell(cell: &str, data: &[u8], canvas: &NodeRef) {
-    let cell: CellIndex = cell.parse().unwrap();
+fn draw_cell(cell: CellIndex, data: &[u8], canvas: &NodeRef) {
     let boundary = cell.boundary();
     let proj = Mercator {};
     let projected_boundary = boundary.into_iter().map(|b| {
@@ -135,7 +185,7 @@ fn draw_cell(cell: &str, data: &[u8], canvas: &NodeRef) {
             y: -b.lat_radians(),
         })
     });
-    info!("Boundary is {:?}", projected_boundary.clone().collect_vec());
+
     let (min_x, max_x) = projected_boundary
         .clone()
         .map(|c| c.x)
@@ -170,7 +220,7 @@ fn main() {
     yew::Renderer::<App>::new().render();
 }
 
-fn download_files(download_result_callback: Callback<(String, Vec<u8>)>) {
+fn download_files(download_complete_callback: Callback<()>) {
     wasm_bindgen_futures::spawn_local(async move {
         let list: Vec<String> = gloo::net::http::Request::get("/api/list")
             .send()
@@ -180,8 +230,7 @@ fn download_files(download_result_callback: Callback<(String, Vec<u8>)>) {
             .await
             .unwrap();
         let db = create_database().await.unwrap();
-        for file in &list[0..50] {
-            let cb = download_result_callback.clone();
+        for file in list {
             let cell = file.split_once(".").unwrap().0;
 
             let data = gloo::net::http::Request::get(&format!("/api/get/{file}"))
@@ -191,7 +240,7 @@ fn download_files(download_result_callback: Callback<(String, Vec<u8>)>) {
                 .binary()
                 .await
                 .unwrap();
-            cb.emit((cell.to_string(), data.clone()));
+
             let tr = db
                 .transaction(&["cells"], idb::TransactionMode::ReadWrite)
                 .unwrap();
@@ -203,10 +252,11 @@ fn download_files(download_result_callback: Callback<(String, Vec<u8>)>) {
                 .unwrap();
             tr.commit().await.unwrap();
         }
+        download_complete_callback.emit(());
     })
 }
 
-async fn load_filed_from_indexeddb(cb: Callback<HashMap<String, Vec<u8>>>) {
+async fn load_files_from_indexeddb() -> HashMap<String, Vec<u8>> {
     let db = create_database().await.unwrap();
 
     let t = db
@@ -218,9 +268,12 @@ async fn load_filed_from_indexeddb(cb: Callback<HashMap<String, Vec<u8>>>) {
         .await
         .unwrap()
         .into_iter()
-        .map(|v| v.into_serde().unwrap())
+        .take(10)
+        .map(|v| v.as_string().unwrap())
         .collect();
+
     let mut values = vec![];
+
     for k in &keys {
         let val = store
             .get(Query::Key(JsValue::from(k)))
@@ -232,10 +285,8 @@ async fn load_filed_from_indexeddb(cb: Callback<HashMap<String, Vec<u8>>>) {
         values.push(data)
     }
 
-    cb.emit(
-        keys.into_iter()
-            .map(|f| f.split_once(".").unwrap().0.to_string())
-            .zip(values)
-            .collect(),
-    )
+    keys.into_iter()
+        .map(|f| f.split_once(".").unwrap().0.to_string())
+        .zip(values)
+        .collect()
 }

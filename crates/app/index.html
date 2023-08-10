@@ -111,6 +111,17 @@
             }
         }
     </style>
+    <script>
+        function geoPosCallback(d) {
+            console.log(d);
+            let event = new CustomEvent("geomove", { "detail": { "lat": d.coords.latitude, "lon": d.coords.longitude } })
+            console.log(event);
+            document.dispatchEvent(event);
+        }
+        navigator.geolocation.watchPosition(
+            geoPosCallback
+        );
+    </script>
 </head>
 
 <body>
