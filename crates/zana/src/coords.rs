@@ -1,5 +1,7 @@
 use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use geo_types::Coord;
+use h3o::LatLng;
+use log::{debug, info};
 use serde::Deserialize;
 
 /// https://wiki.openstreetmap.org/wiki/Node#Structure
@@ -13,12 +15,30 @@ pub struct GeoCoord {
 
 impl GeoCoord {
     pub fn project(&self) -> PicMercator {
-        let lat = (self.decimicro_lat as f64 / 1e7).to_radians();
-        let lon = (self.decimicro_lon as f64 / 1e7).to_radians();
+        let (lat, lon) = self.to_latlon();
 
-        let Coord { x, y } = Mercator {}.transform(&(Coord { x: lon, y: lat }));
+        let Coord { x, y } = Mercator {}.transform(
+            &(Coord {
+                x: lon.to_radians(),
+                y: lat.to_radians(),
+            }),
+        );
 
         PicMercator { x, y: -y }
+    }
+
+    pub fn from_latlon(lat: f64, lon: f64) -> Self {
+        Self {
+            decimicro_lat: (lat * 1e7) as i32,
+            decimicro_lon: (lon * 1e7) as i32,
+        }
+    }
+
+    pub fn to_latlon(&self) -> (f64, f64) {
+        (
+            self.decimicro_lat as f64 / 1e7,
+            self.decimicro_lon as f64 / 1e7,
+        )
     }
 }
 
@@ -35,9 +55,13 @@ impl PicMercator {
             y: -self.y,
         };
         let Coord { x, y } = Mercator {}.invert(&coord);
-        GeoCoord {
-            decimicro_lat: (y.to_degrees() / 1e7) as i32,
-            decimicro_lon: (x.to_degrees() / 1e7) as i32,
-        }
+        GeoCoord::from_latlon(y.to_degrees(), x.to_degrees())
+    }
+}
+
+impl From<GeoCoord> for LatLng {
+    fn from(value: GeoCoord) -> Self {
+        let (lat, lon) = value.to_latlon();
+        LatLng::new(lat, lon).unwrap()
     }
 }

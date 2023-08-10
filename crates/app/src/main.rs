@@ -15,22 +15,26 @@ use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageData};
 use yew::{html, Callback, Component, NodeRef};
-use zana::{draw_tile, CellIndex, Coord, LatLng, Mercator, Resolution, Transform};
+use zana::{
+    coords::{GeoCoord, PicMercator},
+    draw_tile, CellIndex, Coord, LatLng, Mercator, Resolution, Transform,
+};
 
 struct App {
-    lat: f32,
-    lon: f32,
+    window_center: PicMercator,
     canvas: NodeRef,
     html_size: (u32, u32),
     loaded_files: HashMap<String, Vec<u8>>,
 }
 
 impl App {
-    async fn draw_selected_cell(lat: f32, lon: f32, canvas: NodeRef) {
-        let latlon = LatLng::new(lat as f64, lon as f64).unwrap();
+    async fn draw_selected_cell(coords: GeoCoord, canvas: NodeRef) {
+        let latlon = LatLng::from(coords.clone());
         let db = create_database().await.unwrap();
         if let Some((cell, data)) = find_cell(&db, latlon).await {
             draw_cell(cell, &data, &canvas)
+        } else {
+            info!("no cell found at {coords:?}")
         }
     }
 }
@@ -60,6 +64,9 @@ enum Msg {
     ReadFiles(HashMap<String, Vec<u8>>),
     Repaint,
     GeoMoved(MovedEvent),
+    // PanStart((i32,i32)),
+    // Pan((i32, i32)),
+    // PanStop
 }
 
 fn get_body_size() -> (u32, u32) {
@@ -100,9 +107,13 @@ impl Component for App {
         });
         move_listener.forget();
 
+        let helsinki = GeoCoord::from_latlon(60.1684, 24.9438);
+
+        // trigger a repaint on loading
+        ctx.link().callback(|()| Msg::Repaint).emit(());
+
         App {
-            lat: 60.1684,
-            lon: 24.9438,
+            window_center: helsinki.project(),
             loaded_files: HashMap::new(),
             canvas: NodeRef::default(),
             html_size: get_body_size(),
@@ -131,15 +142,12 @@ impl Component for App {
                     download_files(ctx.link().callback(|_| Msg::DownloadedFiles));
                 }
             }
-            Msg::GeoMoved(p) => {
-                self.lat = p.lat;
-                self.lon = p.lon;
-                repaint.emit(());
+            Msg::GeoMoved(_) => {
+                // TODO
             }
             Msg::Repaint => {
                 spawn_local(App::draw_selected_cell(
-                    self.lat,
-                    self.lon,
+                    self.window_center.unproject(),
                     self.canvas.clone(),
                 ));
             }

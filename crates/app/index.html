@@ -32,8 +32,7 @@
 
     <style>
         html {
-            /* Remove touch delay: */
-            touch-action: manipulation;
+            touch-action: none;
         }
 
         body {
@@ -113,9 +112,7 @@
     </style>
     <script>
         function geoPosCallback(d) {
-            console.log(d);
             let event = new CustomEvent("geomove", { "detail": { "lat": d.coords.latitude, "lon": d.coords.longitude } })
-            console.log(event);
             document.dispatchEvent(event);
         }
         navigator.geolocation.watchPosition(
