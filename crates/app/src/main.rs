@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use base64::{prelude::BASE64_STANDARD_NO_PAD, Engine};
 use gloo::{
     events::EventListener,
+    render::{request_animation_frame, AnimationFrame},
     utils::{body, document, format::JsValueSerdeExt, window},
 };
 use hyka::db::create_database;
 use idb::{Database, Query};
+use instant::{Duration, Instant};
 use itertools::Itertools;
 use log::info;
 use serde::Deserialize;
@@ -25,17 +27,39 @@ struct App {
     canvas: NodeRef,
     html_size: (u32, u32),
     loaded_files: HashMap<String, Vec<u8>>,
+    started: Instant,
+    image_data: Option<ImageData>,
+    animation_frame: AnimationFrame,
 }
 
 impl App {
-    async fn draw_selected_cell(coords: GeoCoord, canvas: NodeRef) {
+    async fn draw_selected_cell(coords: GeoCoord) -> Option<ImageData> {
         let latlon = LatLng::from(coords.clone());
         let db = create_database().await.unwrap();
         if let Some((cell, data)) = find_cell(&db, latlon).await {
-            draw_cell(cell, &data, &canvas)
+            Some(draw_cell(cell, &data))
         } else {
-            info!("no cell found at {coords:?}")
+            info!("no cell found at {coords:?}");
+            None
         }
+    }
+
+    fn compose_tiles(&mut self, time: Duration) {
+        let Some(image_data) = &self.image_data else {return};
+        let canvas: HtmlCanvasElement = self.canvas.cast().unwrap();
+        let ctx: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let speed = 2.0;
+        ctx.put_image_data(
+            image_data,
+            ((time.as_secs_f64() / speed).sin() + 1.0) * 100.0,
+            ((time.as_secs_f64() / speed).cos() + 1.0) * 100.0,
+        )
+        .unwrap();
     }
 }
 
@@ -63,7 +87,9 @@ enum Msg {
     DownloadedFiles,
     ReadFiles(HashMap<String, Vec<u8>>),
     Repaint,
+    Recompose,
     GeoMoved(MovedEvent),
+    Rendered(ImageData),
     // PanStart((i32,i32)),
     // Pan((i32, i32)),
     // PanStop
@@ -112,21 +138,25 @@ impl Component for App {
         // trigger a repaint on loading
         ctx.link().callback(|()| Msg::Repaint).emit(());
 
+        let recompose = ctx.link().callback(|_| Msg::Recompose);
+
         App {
             window_center: helsinki.project(),
             loaded_files: HashMap::new(),
             canvas: NodeRef::default(),
             html_size: get_body_size(),
+            started: Instant::now(),
+            image_data: None,
+            animation_frame: request_animation_frame(move |_| recompose.emit(())),
         }
     }
 
     fn update(&mut self, ctx: &yew::Context<Self>, msg: Self::Message) -> bool {
-        info!("{msg:?}");
-        let repaint = ctx.link().callback(|()| Msg::Repaint);
+        let recompose = ctx.link().callback(|()| Msg::Recompose);
         match msg {
             Msg::Resized => {
                 self.html_size = get_body_size();
-                repaint.emit(());
+                recompose.emit(());
             }
             Msg::DownloadedFiles => {
                 let files_loaded_callback = ctx.link().callback(Msg::ReadFiles);
@@ -146,10 +176,21 @@ impl Component for App {
                 // TODO
             }
             Msg::Repaint => {
-                spawn_local(App::draw_selected_cell(
-                    self.window_center.unproject(),
-                    self.canvas.clone(),
-                ));
+                let cb = ctx.link().callback(Msg::Rendered);
+                let coord = self.window_center.unproject();
+                spawn_local(async move {
+                    if let Some(d) = App::draw_selected_cell(coord).await {
+                        cb.emit(d)
+                    }
+                });
+            }
+            Msg::Recompose => {
+                self.compose_tiles(self.started.elapsed());
+                self.animation_frame = request_animation_frame(move |_| recompose.emit(()));
+            }
+            Msg::Rendered(data) => {
+                self.image_data = Some(data);
+                recompose.emit(())
             }
         }
         true
@@ -170,7 +211,7 @@ impl Component for App {
     }
 }
 
-fn draw_cell(cell: CellIndex, data: &[u8], canvas: &NodeRef) {
+fn draw_cell(cell: CellIndex, data: &[u8]) -> ImageData {
     let boundary = cell.boundary();
     let proj = Mercator {};
     let projected_boundary = boundary.into_iter().map(|b| {
@@ -191,23 +232,12 @@ fn draw_cell(cell: CellIndex, data: &[u8], canvas: &NodeRef) {
         .minmax()
         .into_option()
         .unwrap();
-    let (x, y) = get_body_size();
 
-    let mut pixmap = Pixmap::new(x, y).unwrap();
+    let mut pixmap = Pixmap::new(1024, 1024).unwrap();
 
     draw_tile(&mut pixmap, data, (min_x, max_x, min_y, max_y));
 
-    let image_data =
-        ImageData::new_with_u8_clamped_array(Clamped(&pixmap.data()), pixmap.width()).unwrap();
-    let canvas: HtmlCanvasElement = canvas.cast().unwrap();
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .unwrap()
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-
-    ctx.put_image_data(&image_data, 0.0, 0.0).unwrap();
+    ImageData::new_with_u8_clamped_array(Clamped(&pixmap.data()), pixmap.width()).unwrap()
 }
 fn main() {
     wasm_logger::init(wasm_logger::Config::default());
