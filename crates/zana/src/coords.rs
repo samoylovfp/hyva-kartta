@@ -3,14 +3,21 @@ use geo_types::Coord;
 use h3o::LatLng;
 use log::{debug, info};
 use serde::Deserialize;
+use size_of::SizeOf;
 
 /// https://wiki.openstreetmap.org/wiki/Node#Structure
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, SizeOf)]
 pub struct GeoCoord {
     /// south-to-north is -90..90
     pub decimicro_lat: i32,
     /// west-to-east is -180..180 with 0 at greenwich
     pub decimicro_lon: i32,
+}
+
+/// mercator projection with y flipped, so it can be drawn on a [tiny_skia::Pixmap]
+pub struct PicMercator {
+    pub x: f64,
+    pub y: f64,
 }
 
 impl GeoCoord {
@@ -42,11 +49,6 @@ impl GeoCoord {
     }
 }
 
-/// mercator projection with y flipped, so it can be drawn on a [pixmap]
-pub struct PicMercator {
-    pub x: f64,
-    pub y: f64,
-}
 
 impl PicMercator {
     pub fn unproject(&self) -> GeoCoord {

@@ -8,11 +8,12 @@ pub use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use delta_encoding::DeltaDecoderExt;
 pub use geo_types::Coord;
 use itertools::{izip, Itertools};
-use log::info;
+use log::{debug, info};
 use lz4_flex::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 
 pub use h3o::{CellIndex, LatLng, Resolution};
+use size_of::SizeOf;
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTransform};
 
 #[derive(Debug, Clone)]
@@ -21,38 +22,38 @@ pub struct Path {
     // tags: HashMap<String, String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, SizeOf)]
 pub struct ZanaDenseData {
     pub nodes: ZanaDenseNodes,
     pub paths: ZanaDensePaths,
     pub string_table: HashMap<String, u64>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, SizeOf)]
 pub struct ZanaDenseNodes {
     pub dids: Vec<i64>,
     pub dlats: Vec<i32>,
     pub dlons: Vec<i32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, SizeOf)]
 pub enum ZanaObj {
     Node(ZanaNode),
     Path(ZanaPath),
 }
-#[derive(Debug)]
+#[derive(Debug, SizeOf)]
 pub struct ZanaNode {
     id: i64,
     coords: GeoCoord,
 }
 
-#[derive(Debug)]
+#[derive(Debug, SizeOf)]
 pub struct ZanaPath {
     nodes: Vec<i64>,
     tags: Vec<(u64, u64)>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, SizeOf)]
 pub struct ZanaDensePaths {
     pub dids: Vec<i64>,
     pub dnodes: Vec<Vec<i64>>,
@@ -185,13 +186,15 @@ fn draw_path(
 pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
     let mut result = vec![];
     let bufreader = FrameDecoder::new(r);
+    let data: ZanaDenseData = bincode::DefaultOptions::new()
+        .deserialize_from(bufreader)
+        .unwrap();
+    debug!("Dense zana data takes up {:#?}", data.size_of());
     let ZanaDenseData {
         nodes,
         paths,
         string_table,
-    } = bincode::DefaultOptions::new()
-        .deserialize_from(bufreader)
-        .unwrap();
+    } = data;
 
     // nodes
     let ids = nodes.dids.iter().copied().original();
@@ -221,5 +224,10 @@ pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
             tags: tags.chunks_exact(2).map(|c| (c[0], c[1])).collect_vec(),
         }))
     }
+    debug!(
+        "Undensified zana data takes {:#?}, string table takes {:#?}",
+        result.size_of(),
+        string_table.size_of()
+    );
     (string_table, result)
 }
