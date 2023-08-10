@@ -15,7 +15,7 @@ use serde::Deserialize;
 use tiny_skia::Pixmap;
 use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageData};
+use web_sys::{CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageData, ImageBitmap};
 use yew::{html, Callback, Component, NodeRef};
 use zana::{
     coords::{GeoCoord, PicMercator},
@@ -28,16 +28,16 @@ struct App {
     html_size: (u32, u32),
     loaded_files: HashMap<String, Vec<u8>>,
     started: Instant,
-    image_data: Option<ImageData>,
+    image_data: Option<ImageBitmap>,
     animation_frame: AnimationFrame,
 }
 
 impl App {
-    async fn draw_selected_cell(coords: GeoCoord) -> Option<ImageData> {
+    async fn draw_selected_cell(coords: GeoCoord) -> Option<ImageBitmap> {
         let latlon = LatLng::from(coords.clone());
         let db = create_database().await.unwrap();
         if let Some((cell, data)) = find_cell(&db, latlon).await {
-            Some(draw_cell(cell, &data))
+            Some(draw_cell(cell, &data).await)
         } else {
             info!("no cell found at {coords:?}");
             None
@@ -54,7 +54,7 @@ impl App {
             .dyn_into()
             .unwrap();
         let speed = 2.0;
-        ctx.put_image_data(
+        ctx.draw_image_with_image_bitmap(
             image_data,
             ((time.as_secs_f64() / speed).sin() + 1.0) * 100.0,
             ((time.as_secs_f64() / speed).cos() + 1.0) * 100.0,
@@ -89,7 +89,7 @@ enum Msg {
     Repaint,
     Recompose,
     GeoMoved(MovedEvent),
-    Rendered(ImageData),
+    Rendered(ImageBitmap),
     // PanStart((i32,i32)),
     // Pan((i32, i32)),
     // PanStop
@@ -211,7 +211,7 @@ impl Component for App {
     }
 }
 
-fn draw_cell(cell: CellIndex, data: &[u8]) -> ImageData {
+async fn draw_cell(cell: CellIndex, data: &[u8]) -> ImageBitmap {
     let boundary = cell.boundary();
     let proj = Mercator {};
     let projected_boundary = boundary.into_iter().map(|b| {
@@ -237,7 +237,12 @@ fn draw_cell(cell: CellIndex, data: &[u8]) -> ImageData {
 
     draw_tile(&mut pixmap, data, (min_x, max_x, min_y, max_y));
 
-    ImageData::new_with_u8_clamped_array(Clamped(&pixmap.data()), pixmap.width()).unwrap()
+    let future = window()
+        .create_image_bitmap_with_image_data(
+            &ImageData::new_with_u8_clamped_array(Clamped(&pixmap.data()), pixmap.width()).unwrap(),
+        )
+        .unwrap();
+    wasm_bindgen_futures::JsFuture::from(future).await.unwrap().into()
 }
 fn main() {
     wasm_logger::init(wasm_logger::Config::default());
