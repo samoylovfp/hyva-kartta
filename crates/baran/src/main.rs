@@ -12,6 +12,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::BufReader,
+    path::PathBuf,
     process::exit,
     time::Instant,
 };
@@ -22,44 +23,50 @@ use zana::{
 };
 
 fn main() {
-    serve();
+    env_logger::init();
 
-    // let rt = Runtime::new().unwrap();
-    // let action = std::env::args().skip(1).next().unwrap_or_else(|| {
-    //     println!("Pass an action, INGEST, DUMP, or DRAW");
-    //     exit(1)
-    // });
-    // if action == "INGEST" {
-    //     rt.block_on(ingest_into_clickhouse(&[
-    //         "saint_petersburg.pbf",
-    //         "berlin.pbf",
-    //         "uusimaa.pbf",
-    //     ]));
-    // }
+    let action = std::env::args().skip(1).next().unwrap_or_else(|| {
+        println!("Pass an action");
+        exit(1)
+    });
 
-    // if action == "DUMP" {
-    //     dump_all_ch_to_zana_files(&rt)
-    // }
+    let rt = Runtime::new().unwrap();
+    if action == "SERVE" {
+        serve()
+    }
 
-    // if action == "DRAW" {
-    //     _ = std::fs::create_dir("drawings");
-    //     for file in std::fs::read_dir("h3").unwrap() {
-    //         let path = file.unwrap().path();
-    //         let fname = path.file_name().unwrap().to_str().unwrap();
-    //         draw_tile(path.to_str().unwrap(), &format!("drawings/{fname}.png"))
-    //     }
-    // }
-    // if action == "TIME" {
-    //     time_loading_files();
-    // }
-    // if action == "CELL" {
-    //     let url = std::env::args().nth(2).unwrap();
-    //     let cell: CellIndex = url.parse().unwrap();
-    //     let ll: LatLng = cell.into();
-    //     let lat = ll.lat();
-    //     let lon = ll.lng();
-    //     println!("https://www.openstreetmap.org/#map=12/{lat}/{lon}")
-    // }
+    if action == "INGEST" {
+        rt.block_on(ingest_into_clickhouse(&[
+            "saint_petersburg.pbf",
+            "berlin.pbf",
+            "uusimaa.pbf",
+        ]));
+    }
+
+    if action == "DUMP" {
+        dump_all_ch_to_zana_files(&rt)
+    }
+
+    if action == "DRAW" {
+        _ = std::fs::create_dir("drawings");
+        for file in std::fs::read_dir("h3").unwrap() {
+            let path = file.unwrap().path();
+            let fname = path.file_name().unwrap().to_str().unwrap();
+            // let pixmap =
+            // draw_tile( &format!("drawings/{fname}.png"))
+        }
+    }
+    if action == "TIME" {
+        time_loading_files();
+    }
+    if action == "CELL" {
+        let url = std::env::args().nth(2).unwrap();
+        let cell: CellIndex = url.parse().unwrap();
+        let ll: LatLng = cell.into();
+        let lat = ll.lat();
+        let lon = ll.lng();
+        println!("https://www.openstreetmap.org/#map=12/{lat}/{lon}")
+    }
 }
 
 fn dump_all_ch_to_zana_files(rt: &Runtime) {
