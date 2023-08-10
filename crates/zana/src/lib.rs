@@ -1,15 +1,14 @@
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufReader, Read},
-    path::PathBuf,
-};
+pub mod coords;
+
+use std::{collections::HashMap, io::Read};
 
 use bincode::Options;
+use coords::{GeoCoord, PicMercator};
 pub use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use delta_encoding::DeltaDecoderExt;
 pub use geo_types::Coord;
 use itertools::{izip, Itertools};
+use log::info;
 use lz4_flex::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +17,7 @@ use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTran
 
 #[derive(Debug, Clone)]
 pub struct Path {
-    pub points: Vec<(i32, i32)>,
+    pub points: Vec<GeoCoord>,
     // tags: HashMap<String, String>,
 }
 
@@ -44,8 +43,7 @@ pub enum ZanaObj {
 #[derive(Debug)]
 pub struct ZanaNode {
     id: i64,
-    decimicro_lat: i32,
-    decimicro_lon: i32,
+    coords: GeoCoord,
 }
 
 #[derive(Debug)]
@@ -68,31 +66,6 @@ pub struct RelativePath {
     relative_points: Vec<(i32, i32)>,
 }
 
-impl<'s> Path {
-    pub fn iter_lon_lat(&'s self) -> impl Iterator<Item = (f64, f64)> + 's {
-        self.points
-            .iter()
-            .copied()
-            .map(|(lon, lat)| (lon as f64 / 1e7, lat as f64 / 1e7))
-    }
-
-    pub fn relative_to(&self, c: h3o::CellIndex) -> RelativePath {
-        let center = h3o::LatLng::from(c);
-        let relative_points = self
-            .points
-            .iter()
-            .copied()
-            .map(|(lon, lat)| {
-                (
-                    lon - (center.lng() * 1e7) as i32,
-                    lat - (center.lat() * 1e7) as i32,
-                )
-            })
-            .collect();
-        RelativePath { relative_points }
-    }
-}
-
 pub fn draw_tile(
     pixmap: &mut Pixmap,
     data: &[u8],
@@ -100,19 +73,10 @@ pub fn draw_tile(
 ) {
     let (string_table, zana_data) = read_zana_data(data);
 
-    let proj = Mercator::default();
-
     let node_id_hashmap: HashMap<_, _> = zana_data
         .iter()
         .filter_map(|o| match o {
-            ZanaObj::Node(n) => {
-                let coord = proj.transform(&Coord {
-                    x: (n.decimicro_lon as f64 / 1e7).to_radians(),
-                    y: (n.decimicro_lat as f64 / 1e7).to_radians(),
-                });
-
-                Some((n.id, (coord.x, -coord.y)))
-            }
+            ZanaObj::Node(n) => Some((n.id, (n.coords.clone()))),
             _ => None,
         })
         .collect();
@@ -186,12 +150,12 @@ struct PaintStyle<'paint> {
 fn draw_path(
     pixmap: &mut Pixmap,
     p: &ZanaPath,
-    node_id_hashmap: &HashMap<i64, (f64, f64)>,
+    node_id_hashmap: &HashMap<i64, GeoCoord>,
     offset: (f64, f64),
     scale: (f64, f64),
     PaintStyle { paint, stroke }: &PaintStyle,
 ) {
-    let transform = |x: f64, y: f64| {
+    let offset_and_scale = |x: f64, y: f64| {
         (
             (x as f64 - offset.0) * scale.0,
             (y as f64 - offset.1) * scale.1,
@@ -204,12 +168,14 @@ fn draw_path(
         .filter_map(|n| node_id_hashmap.get(n))
         .collect_vec();
     if node_coords.len() > 1 {
-        let start = transform(node_coords[0].0, node_coords[0].1);
-        pb.move_to(start.0 as f32, start.1 as f32);
+        let PicMercator { x, y } = node_coords[0].project();
+        let (x, y) = offset_and_scale(x, y);
+        pb.move_to(x as f32, y as f32);
     }
     for node in &node_coords[1..] {
-        let coords = transform(node.0, node.1);
-        pb.line_to(coords.0 as f32, coords.1 as f32);
+        let PicMercator { x, y } = node.project();
+        let (x, y) = offset_and_scale(x, y);
+        pb.line_to(x as f32, y as f32);
     }
     if let Some(p) = pb.finish() {
         pixmap.stroke_path(&p, &paint, &stroke, SkiaTransform::identity(), None);
@@ -235,8 +201,10 @@ pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
     for (id, lat, lon) in izip!(ids, lats, lons) {
         result.push(ZanaObj::Node(ZanaNode {
             id,
-            decimicro_lat: lat,
-            decimicro_lon: lon,
+            coords: GeoCoord {
+                decimicro_lat: lat,
+                decimicro_lon: lon,
+            },
         }));
     }
 

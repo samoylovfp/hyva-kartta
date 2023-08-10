@@ -8,14 +8,12 @@ use gloo::{
 use hyka::db::create_database;
 use idb::{Database, Query};
 use itertools::Itertools;
-use log::{error, info};
+use log::info;
 use serde::Deserialize;
-use tiny_skia::{Color, Pixmap};
-use wasm_bindgen::{prelude::Closure, Clamped, JsCast, JsValue};
+use tiny_skia::Pixmap;
+use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{
-    CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageData, PositionOptions,
-};
+use web_sys::{CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageData};
 use yew::{html, Callback, Component, NodeRef};
 use zana::{draw_tile, CellIndex, Coord, LatLng, Mercator, Resolution, Transform};
 
@@ -44,7 +42,6 @@ async fn find_cell(db: &Database, coord: LatLng) -> Option<(CellIndex, Vec<u8>)>
         .unwrap();
     let store = tr.object_store("cells").unwrap();
     while res >= Resolution::Three {
-        info!("{res}");
         let cell = coord.to_cell(res);
         let key = format!("{cell}.zan");
         if let Some(o) = store.get(Query::Key(key.into())).await.unwrap() {
@@ -73,6 +70,7 @@ fn get_body_size() -> (u32, u32) {
     )
 }
 
+/// this comes from JS
 #[derive(Debug, Deserialize)]
 struct MovedEvent {
     lat: f32,
@@ -85,18 +83,6 @@ impl Component for App {
     type Properties = ();
 
     fn create(ctx: &yew::Context<Self>) -> Self {
-        // spawn_local(async {
-        //     let db = create_database().await.unwrap();
-        //     let tr = db
-        //         .transaction(&["cells"], idb::TransactionMode::ReadWrite)
-        //         .unwrap();
-        //     let store = tr.object_store("cells").unwrap();
-        //     let keys = store.get_all_keys(None, None).await.unwrap();
-        //     for k in keys {
-        //         store.delete(Query::Key(k)).await.unwrap();
-        //     }
-        //     tr.commit().await.unwrap();
-        // });
         let resize_callback = ctx.link().callback(|_| Msg::Resized);
         let resize_listener =
             EventListener::new(&window(), "resize", move |_| resize_callback.emit(()));
@@ -115,8 +101,8 @@ impl Component for App {
         move_listener.forget();
 
         App {
-            lat: 10.0,
-            lon: 10.0,
+            lat: 60.1684,
+            lon: 24.9438,
             loaded_files: HashMap::new(),
             canvas: NodeRef::default(),
             html_size: get_body_size(),
