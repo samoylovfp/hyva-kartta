@@ -14,6 +14,7 @@ use std::{
     io::BufReader,
     path::PathBuf,
     process::exit,
+    str::FromStr,
     time::Instant,
 };
 use tokio::runtime::Runtime;
@@ -25,7 +26,7 @@ use zana::{
 fn main() {
     env_logger::init();
 
-    let action = std::env::args().skip(1).next().unwrap_or_else(|| {
+    let action = std::env::args().nth(1).unwrap_or_else(|| {
         println!("Pass an action");
         exit(1)
     });
@@ -75,8 +76,17 @@ fn main() {
 fn dump_all_ch_to_zana_files(rt: &Runtime) {
     let client = Client::default().with_url("http://localhost:8123");
 
-    let mut cells_to_process = CellIndex::base_cells()
-        .flat_map(|c| c.children(Resolution::Three))
+    let mut cells_to_process = rt
+        .block_on(async {
+            let client = Client::default().with_url("http://localhost:8123");
+            client
+                .query("select distinct cell3 from nodes")
+                .fetch_all::<String>()
+                .await
+                .unwrap()
+        })
+        .into_iter()
+        .map(|c| CellIndex::from_str(&c).unwrap())
         .collect_vec();
 
     while let Some(cell) = cells_to_process.pop() {
@@ -86,6 +96,7 @@ fn dump_all_ch_to_zana_files(rt: &Runtime) {
             continue;
         }
         if node_count > MAX_NODES_PER_CELL && cell.resolution() < MIN_RESOLUTION {
+            // FIXME: probably some data loss on edges here
             cells_to_process.extend(cell.children(cell.resolution().succ().unwrap()));
             println!("Too many nodes {node_count}, splitting");
             continue;
