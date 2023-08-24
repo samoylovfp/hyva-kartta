@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use server::serve;
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{read_dir, File},
     io::BufReader,
     path::PathBuf,
     process::exit,
@@ -36,11 +36,14 @@ fn main() {
     }
 
     if action == "INGEST" {
-        rt.block_on(ingest_into_clickhouse(&[
-            "saint_petersburg.pbf",
-            "berlin.pbf",
-            "uusimaa.pbf",
-        ]));
+        let filenames = read_dir(".")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|r| r.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("pbf"))
+            .collect_vec();
+        rt.block_on(ingest_into_clickhouse(&filenames));
     }
 
     if action == "DUMP" {
@@ -142,7 +145,7 @@ impl StringTable {
     async fn fetch(client: &Client) -> Self {
         StringTable {
             string_map: client
-                .query("SELECT ?fields from string_table")
+                .query("SELECT ?fields from strings")
                 .fetch_all::<CHStringTableRow>()
                 .await
                 .unwrap()
@@ -169,7 +172,7 @@ impl StringTable {
     }
 }
 
-async fn ingest_into_clickhouse(files: &[&str]) {
+async fn ingest_into_clickhouse(files: &[PathBuf]) {
     let client = Client::default().with_url("http://localhost:8123");
     let mut string_map = StringTable::fetch(&client).await;
 
@@ -177,7 +180,7 @@ async fn ingest_into_clickhouse(files: &[&str]) {
     let mut path_inserter = client.insert("paths").unwrap();
 
     for fname in files {
-        for obj in osmobj(fname.to_string()).par_iter() {
+        for obj in osmobj(fname.to_string_lossy().to_string()).par_iter() {
             let obj = obj.unwrap();
             match obj {
                 OsmObj::Node(n) => insert_node(&mut node_inserter, &mut string_map, n).await,
@@ -190,7 +193,7 @@ async fn ingest_into_clickhouse(files: &[&str]) {
     node_inserter.end().await.unwrap();
     path_inserter.end().await.unwrap();
 
-    let mut string_inserter = client.insert("string_table").unwrap();
+    let mut string_inserter = client.insert("strings").unwrap();
     for r in string_map.new_inserts {
         string_inserter.write(&r).await.unwrap()
     }

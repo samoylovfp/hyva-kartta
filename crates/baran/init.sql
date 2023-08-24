@@ -8,17 +8,17 @@ CREATE TABLE nodes (
 
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (cell12, id)
-PARTITION BY cell3
+PARTITION BY cell3;
 
 CREATE TABLE paths (
     id Int64 CODEC(T64, LZ4HC),
     nodes Array(Int64) CODEC(Delta, LZ4HC),
     tags Map(UInt64, UInt64) CODEC(T64, LZ4HC)
 ) ENGINE = ReplacingMergeTree()
-ORDER BY id
+ORDER BY id;
 
-CREATE TABLE string_table (
+CREATE TABLE strings (
     id UInt64,
     string String
 ) ENGINE = ReplacingMergeTree()
-ORDER BY id
+ORDER BY id;
