@@ -15,8 +15,10 @@ use std::{
 };
 use tokio::runtime::Runtime;
 use zana::{
-    coords::GeoCoord, draw_tile, read_zana_data, write_zana_data, CellIndex, LatLng, Resolution,
-    StringTable, ZanaNode, ZanaPath,
+    coords::GeoCoord,
+    draw_tile,
+    h3o::{CellIndex, LatLng, Resolution},
+    read_zana_data, StringTable, ZanaNode, ZanaPath, write_zana_data,
 };
 
 fn main() {

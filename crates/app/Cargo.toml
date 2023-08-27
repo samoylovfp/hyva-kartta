@@ -19,6 +19,7 @@ tiny-skia = "0.11.1"
 itertools = "0.11.0"
 serde = { version = "1.0.183", features = ["derive"] }
 instant = { version = "0.1.12", features = ["wasm-bindgen"] }
+lru = "0.11.0"
 
 [dependencies.web-sys]
 version = "0.3.64"

@@ -1,21 +1,24 @@
 pub mod coords;
 
-use std::{
-    collections::HashMap,
-    io::{Read, Write},
-};
-
 use bincode::Options;
 use coords::{GeoCoord, PicMercator};
 pub use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use delta_encoding::{DeltaDecoderExt, DeltaEncoderExt};
+pub use geo;
+use geo::algorithm::Intersects;
 pub use geo_types::Coord;
+pub use h3o;
+use h3o::geom::ToGeo;
 pub use h3o::{CellIndex, LatLng, Resolution};
 use itertools::{izip, Itertools};
 use log::{debug, trace};
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use serde::{Deserialize, Serialize};
 use size_of::SizeOf;
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+};
 pub use tiny_skia::{Color, Pixmap};
 use tiny_skia::{Paint, PathBuilder, Stroke, Transform as SkiaTransform};
 
@@ -231,6 +234,48 @@ pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
         string_table.size_of()
     );
     (string_table, result)
+}
+
+pub fn filter_cells_with_mercator_rectangle(
+    cells: &[CellIndex],
+    view_center: impl Into<PicMercator>,
+    ratio: f64,
+    scale: f64,
+) -> Vec<CellIndex> {
+    let mercator_center = view_center.into();
+
+    let vertical_scale = scale / ratio;
+    let mercator_left = mercator_center.x - scale / 2.0;
+    let mercator_right = mercator_center.x + scale / 2.0;
+    // this is picmercator, so y is flipped
+    let mercator_top = mercator_center.y - vertical_scale / 2.0;
+    let mercator_bottom = mercator_center.y + vertical_scale / 2.0;
+
+    let proj = Mercator {};
+
+    let topleft = proj.invert(&Coord {
+        x: mercator_left,
+        y: -mercator_top,
+    });
+    let topright = proj.invert(&Coord {
+        x: mercator_right,
+        y: -mercator_top,
+    });
+    let bottomleft = proj.invert(&Coord {
+        x: mercator_left,
+        y: -mercator_bottom,
+    });
+    let bottomright = proj.invert(&Coord {
+        x: mercator_right,
+        y: -mercator_bottom,
+    });
+
+    let geo_polygon = geo::polygon!(topleft, topright, bottomright, bottomleft);
+    cells
+        .iter()
+        .copied()
+        .filter(|c| geo_polygon.intersects(&c.to_geom(false).unwrap()))
+        .collect()
 }
 
 #[derive(Default, Clone)]

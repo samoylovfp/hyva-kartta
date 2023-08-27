@@ -15,6 +15,7 @@ pub struct GeoCoord {
 }
 
 /// mercator projection with y flipped, so it can be drawn on a [tiny_skia::Pixmap]
+#[derive(Debug, Clone)]
 pub struct PicMercator {
     pub x: f64,
     pub y: f64,
@@ -64,5 +65,30 @@ impl From<GeoCoord> for LatLng {
     fn from(value: GeoCoord) -> Self {
         let (lat, lon) = value.to_latlon();
         LatLng::new(lat, lon).unwrap()
+    }
+}
+
+impl From<LatLng> for GeoCoord {
+    fn from(value: LatLng) -> Self {
+        GeoCoord::from_latlon(value.lat(), value.lng())
+    }
+}
+
+impl From<GeoCoord> for PicMercator {
+    fn from(value: GeoCoord) -> Self {
+        value.project()
+    }
+}
+
+impl From<PicMercator> for GeoCoord {
+    fn from(value: PicMercator) -> Self {
+        value.unproject()
+    }
+}
+
+impl From<LatLng> for PicMercator {
+    fn from(value: LatLng) -> Self {
+        let geo: GeoCoord = value.into();
+        geo.project()
     }
 }
