@@ -48,22 +48,25 @@ fn main() {
     }
 
     if action == "DRAW" {
+        let mut pixmap = zana::Pixmap::new(1024 << 3, 1024 << 3).unwrap();
+        pixmap.fill(zana::Color::BLACK);
         _ = std::fs::create_dir("drawings");
         for file in std::fs::read_dir("h3").unwrap() {
             let path = file.unwrap().path();
-            let fname = path.file_name().unwrap().to_str().unwrap();
-            let mut pixmap = zana::Pixmap::new(1024, 1024).unwrap();
             let mut data = Vec::new();
 
             use std::io::Read;
             File::open(&path).unwrap().read_to_end(&mut data).unwrap();
+            let scale = 0.6;
+            let x = 0.008;
+            let y = -1.430;
             draw_tile(
                 &mut pixmap,
                 &mut BufReader::new(File::open(&path).unwrap()),
-                (0.0, 1.0, 0.0, 1.0),
+                (x, x + scale, y, y + scale),
             );
-            pixmap.save_png(&format!("drawings/{fname}.png")).unwrap();
         }
+        pixmap.save_png(&format!("all.png")).unwrap();
     }
     if action == "TIME" {
         time_loading_files();
