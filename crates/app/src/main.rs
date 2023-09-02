@@ -1,7 +1,10 @@
 // CURRENT TASK:
 // draw hexes panned with view_center
 
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    f64::consts::TAU,
+};
 
 use base64::{prelude::BASE64_STANDARD_NO_PAD, Engine};
 use gloo::{
@@ -11,13 +14,11 @@ use gloo::{
 };
 use hyka::db::create_database;
 use idb::{Database, Query};
-use instant::{Duration, Instant};
 use itertools::Itertools;
 use log::{debug, info};
-use lru::LruCache;
 use serde::Deserialize;
-use tiny_skia::{Paint, PathBuilder, Pixmap, Point, Stroke, Transform};
-use wasm_bindgen::{throw_str, Clamped, JsCast, JsValue};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{
     CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageBitmap, ImageData,
@@ -26,9 +27,9 @@ use web_sys::{
 use yew::{html, Callback, Component, NodeRef};
 use zana::{
     coords::{GeoCoord, PicMercator},
-    filter_cells_with_mercator_rectangle,
+    draw_hex, filter_cells_with_mercator_rectangle,
     h3o::{CellIndex, LatLng, Resolution},
-    Mercator,
+    Mercator, cell_to_bounding_box,
 };
 
 struct App {
@@ -39,10 +40,12 @@ struct App {
     animation_frame: AnimationFrame,
     downloaded_cells: Vec<CellIndex>,
     pan_start: Option<(PanEvent, PicMercator)>,
+    visible_cells: HashSet<CellIndex>,
+    drawn_cells: HashMap<CellIndex, UploadedCell>,
 }
 
 impl App {
-    fn compose_tiles(&mut self) {
+    fn compose_tiles(&mut self, callback: Callback<UploadedCell>) {
         let canvas: HtmlCanvasElement = self.canvas.cast().unwrap();
         let ctx: CanvasRenderingContext2d = canvas
             .get_context("2d")
@@ -59,10 +62,25 @@ impl App {
             ratio,
             self.mercator_scale,
         );
-        for cell in cells {
-            let res = draw_hex(cell);
-            // TODO: finish panning and move hexes of cells that current viewport matches
-            // THEN: add a worker that produces actual hexes with values
+        for &cell in &cells {
+            let mut pixmap = Pixmap::new(1024, 1024).unwrap();
+            pixmap.fill(Color::BLACK);
+            draw_hex(cell, &mut pixmap);
+            let res = DrawnCell {
+                cell,
+                data: pixmap,
+            };
+            if !self.drawn_cells.contains_key(&cell) {
+                let cb = callback.clone();
+                spawn_local(async move {
+                    let img_data = pixmap_to_imagedata(res).await;
+                    cb.emit(img_data)
+                })
+            }
+        }
+        self.drawn_cells.retain(|k, _v| cells.contains(k));
+        for (cell, data) in &self.drawn_cells {
+            let bounding_box = cell_to_bounding_box(*cell);
         }
 
         // for cell in cells {
@@ -88,73 +106,14 @@ impl App {
 }
 
 struct DrawnCell {
-    topleft: PicMercator,
-    scale_x: f32,
-    scale_y: f32,
+    cell: CellIndex,
     data: Pixmap,
 }
 
-fn draw_hex(cell: CellIndex) -> DrawnCell {
-    let boundary = cell.boundary();
-    let mut boundary_iter = boundary
-        .into_iter()
-        .copied()
-        .map(|v| -> PicMercator { v.into() });
-    let (x_min, x_max) = boundary_iter
-        .clone()
-        .map(|m| m.x)
-        .minmax()
-        .into_option()
-        .unwrap();
-
-    let x_scale = x_max - x_min;
-
-    let (y_min, y_max) = boundary_iter
-        .clone()
-        .map(|m| m.y)
-        .minmax()
-        .into_option()
-        .unwrap();
-
-    let y_scale = y_max - y_min;
-
-    let x_size = 512.0;
-    // assuming cell boundary is never flat
-    assert!(y_scale > 0.0);
-    let y_size = x_size / x_scale * y_scale;
-
-    let mut pixmap = Pixmap::new(x_size as u32, y_size as u32).unwrap();
-
-    let offset_and_scale = |x: f64, y: f64| ((x - x_min) / x_scale, (y - y_min) / y_scale);
-
-    let mut path = PathBuilder::new();
-    let first_point = boundary_iter.next().unwrap();
-    let (x, y) = offset_and_scale(first_point.x, first_point.y);
-    path.move_to(x as f32, y as f32);
-
-    for node in boundary_iter {
-        let (x, y) = offset_and_scale(node.x, node.y);
-        path.line_to(x as f32, y as f32);
-    }
-    path.close();
-
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(200, 200, 0, 255);
-
-    pixmap.stroke_path(
-        &path.finish().unwrap(),
-        &paint,
-        &Stroke::default(),
-        Transform::identity(),
-        None,
-    );
-
-    DrawnCell {
-        topleft: PicMercator { x: x_min, y: y_min },
-        scale_x: x_scale as f32,
-        scale_y: y_scale as f32,
-        data: pixmap,
-    }
+#[derive(Debug)]
+struct UploadedCell {
+    cell: CellIndex,
+    data: ImageBitmap,
 }
 
 async fn find_cell(db: &Database, coord: LatLng) -> Option<(CellIndex, Vec<u8>)> {
@@ -192,7 +151,7 @@ enum Msg {
     ReadFiles(Vec<String>),
     Recompose,
     GeoMoved(MovedEvent),
-    Rendered(ImageBitmap),
+    Rendered(UploadedCell),
     PanStart(PanEvent),
     Pan(PanEvent),
     PanStop,
@@ -250,6 +209,8 @@ impl Component for App {
             mercator_scale: 0.001,
             downloaded_cells: vec![],
             pan_start: None,
+            visible_cells: Default::default(),
+            drawn_cells: Default::default(),
         }
     }
 
@@ -279,11 +240,13 @@ impl Component for App {
                 // TODO
             }
             Msg::Recompose => {
-                self.compose_tiles();
+                self.compose_tiles(ctx.link().callback(|d| Msg::Rendered(d)));
                 // spawn_local(self.compose_tiles());
                 // self.animation_frame = request_animation_frame(move |_| recompose.emit(()));
             }
-            Msg::Rendered(data) => recompose.emit(()),
+            Msg::Rendered(cell) => {
+                self.drawn_cells.insert(cell.cell, cell);
+            }
             Msg::PanStart(pan_event) => {
                 self.pan_start = Some((pan_event, self.view_center.clone()))
             }
@@ -343,6 +306,20 @@ impl Component for App {
             ></canvas>
             </>
         }
+    }
+}
+
+async fn pixmap_to_imagedata(DrawnCell { cell, data }: DrawnCell) -> UploadedCell {
+    let future = window()
+        .create_image_bitmap_with_image_data(
+            &ImageData::new_with_u8_clamped_array(Clamped(&data.data()), data.width()).unwrap(),
+        )
+        .unwrap();
+    let image_data: ImageBitmap = JsFuture::from(future).await.unwrap().into();
+
+    UploadedCell {
+        cell,
+        data: image_data,
     }
 }
 

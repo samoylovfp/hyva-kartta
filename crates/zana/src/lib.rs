@@ -247,7 +247,7 @@ pub fn filter_cells_with_mercator_rectangle(
     let vertical_scale = scale / ratio;
     let mercator_left = mercator_center.x - scale / 2.0;
     let mercator_right = mercator_center.x + scale / 2.0;
-    // this is picmercator, so y is flipped
+    // this is picmercator, so top has lower y coordinate
     let mercator_top = mercator_center.y - vertical_scale / 2.0;
     let mercator_bottom = mercator_center.y + vertical_scale / 2.0;
 
@@ -477,5 +477,84 @@ mod tests {
             ),
         ]
         "###);
+    }
+}
+
+pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap) {
+    let boundary = cell.boundary();
+    let mut boundary_iter = boundary
+        .into_iter()
+        .copied()
+        .map(|v| -> PicMercator { v.into() });
+    let (x_min, x_max) = boundary_iter
+        .clone()
+        .map(|m| m.x)
+        .minmax()
+        .into_option()
+        .unwrap();
+
+    let x_scale = x_max - x_min;
+
+    let (y_min, y_max) = boundary_iter
+        .clone()
+        .map(|m| m.y)
+        .minmax()
+        .into_option()
+        .unwrap();
+
+    let y_scale = y_max - y_min;
+
+    let scale = std::cmp::min(pixmap.width(), pixmap.height()) as f64
+        / std::cmp::max_by(x_scale, y_scale, f64::total_cmp);
+
+    let offset_and_scale = |x: f64, y: f64| ((x - x_min) * scale, (y - y_min) * scale);
+
+    let mut path = PathBuilder::new();
+    let first_point = boundary_iter.next().unwrap();
+    let (x, y) = offset_and_scale(first_point.x, first_point.y);
+    path.move_to(x as f32, y as f32);
+
+    for node in boundary_iter {
+        let (x, y) = offset_and_scale(node.x, node.y);
+        path.line_to(x as f32, y as f32);
+    }
+    path.close();
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(200, 200, 0, 255);
+
+    pixmap.stroke_path(
+        &path.finish().unwrap(),
+        &paint,
+        &Stroke::default(),
+        SkiaTransform::identity(),
+        None,
+    );
+}
+
+pub struct PicMercatorBoundingBox {
+    pub top_left: PicMercator,
+    pub bottom_right: PicMercator,
+}
+
+pub fn cell_to_bounding_box(cell: CellIndex) -> PicMercatorBoundingBox {
+    let bounds = cell.boundary();
+    let (min_lon, max_lon) = bounds
+        .clone()
+        .into_iter()
+        .map(|v| v.lng())
+        .minmax_by(f64::total_cmp)
+        .into_option()
+        .unwrap();
+    let (min_lat, max_lat) = bounds
+        .into_iter()
+        .map(|v| v.lat())
+        .minmax_by(f64::total_cmp)
+        .into_option()
+        .unwrap();
+
+    PicMercatorBoundingBox {
+        top_left: GeoCoord::from_latlon(min_lat, min_lon).into(),
+        bottom_right: GeoCoord::from_latlon(max_lat, max_lon).into(),
     }
 }
