@@ -15,7 +15,9 @@ use serde::Deserialize;
 use tiny_skia::Pixmap;
 use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageData, ImageBitmap};
+use web_sys::{
+    CanvasRenderingContext2d, CustomEvent, Event, HtmlCanvasElement, ImageBitmap, ImageData,
+};
 use yew::{html, Callback, Component, NodeRef};
 use zana::{
     coords::{GeoCoord, PicMercator},
@@ -45,7 +47,9 @@ impl App {
     }
 
     fn compose_tiles(&mut self, time: Duration) {
-        let Some(image_data) = &self.image_data else {return};
+        let Some(image_data) = &self.image_data else {
+            return;
+        };
         let canvas: HtmlCanvasElement = self.canvas.cast().unwrap();
         let ctx: CanvasRenderingContext2d = canvas
             .get_context("2d")
@@ -106,8 +110,8 @@ fn get_body_size() -> (u32, u32) {
 /// this comes from JS
 #[derive(Debug, Deserialize)]
 struct MovedEvent {
-    lat: f32,
-    lon: f32,
+    // lat: f32,
+    // lon: f32,
 }
 
 impl Component for App {
@@ -214,7 +218,7 @@ impl Component for App {
 async fn draw_cell(cell: CellIndex, data: &[u8]) -> ImageBitmap {
     let boundary = cell.boundary();
     let proj = Mercator {};
-    let projected_boundary = boundary.into_iter().map(|b| {
+    let projected_boundary = boundary.iter().map(|b| {
         proj.transform(&Coord {
             x: b.lng_radians(),
             y: -b.lat_radians(),
@@ -239,10 +243,13 @@ async fn draw_cell(cell: CellIndex, data: &[u8]) -> ImageBitmap {
 
     let future = window()
         .create_image_bitmap_with_image_data(
-            &ImageData::new_with_u8_clamped_array(Clamped(&pixmap.data()), pixmap.width()).unwrap(),
+            &ImageData::new_with_u8_clamped_array(Clamped(pixmap.data()), pixmap.width()).unwrap(),
         )
         .unwrap();
-    wasm_bindgen_futures::JsFuture::from(future).await.unwrap().into()
+    wasm_bindgen_futures::JsFuture::from(future)
+        .await
+        .unwrap()
+        .into()
 }
 fn main() {
     wasm_logger::init(wasm_logger::Config::default());
@@ -260,7 +267,7 @@ fn download_files(download_complete_callback: Callback<()>) {
             .unwrap();
         let db = create_database().await.unwrap();
         for file in list {
-            let cell = file.split_once(".").unwrap().0;
+            let _cell = file.split_once('.').unwrap().0;
 
             let data = gloo::net::http::Request::get(&format!("/api/get/{file}"))
                 .send()
@@ -315,7 +322,7 @@ async fn load_files_from_indexeddb() -> HashMap<String, Vec<u8>> {
     }
 
     keys.into_iter()
-        .map(|f| f.split_once(".").unwrap().0.to_string())
+        .map(|f| f.split_once('.').unwrap().0.to_string())
         .zip(values)
         .collect()
 }

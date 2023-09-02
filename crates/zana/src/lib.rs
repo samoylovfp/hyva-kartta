@@ -1,20 +1,23 @@
 pub mod coords;
 
-use std::{collections::HashMap, io::Read};
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+};
 
 use bincode::Options;
 use coords::{GeoCoord, PicMercator};
 pub use d3_geo_rs::{projection::mercator::Mercator, Transform};
-use delta_encoding::DeltaDecoderExt;
+use delta_encoding::{DeltaDecoderExt, DeltaEncoderExt};
 pub use geo_types::Coord;
-use itertools::{izip, Itertools};
-use log::{debug, info};
-use lz4_flex::frame::FrameDecoder;
-use serde::{Deserialize, Serialize};
-
 pub use h3o::{CellIndex, LatLng, Resolution};
+use itertools::{izip, Itertools};
+use log::debug;
+use lz4_flex::frame::{FrameDecoder, FrameEncoder};
+use serde::{Deserialize, Serialize};
 use size_of::SizeOf;
-use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform as SkiaTransform};
+pub use tiny_skia::Pixmap;
+use tiny_skia::{Color, Paint, PathBuilder, Stroke, Transform as SkiaTransform};
 
 #[derive(Debug, Clone)]
 pub struct Path {
@@ -43,14 +46,14 @@ pub enum ZanaObj {
 }
 #[derive(Debug, SizeOf)]
 pub struct ZanaNode {
-    id: i64,
-    coords: GeoCoord,
+    pub id: i64,
+    pub coords: GeoCoord,
 }
 
 #[derive(Debug, SizeOf)]
 pub struct ZanaPath {
-    nodes: Vec<i64>,
-    tags: Vec<(u64, u64)>,
+    pub nodes: Vec<i64>,
+    pub tags: Vec<(u64, u64)>,
 }
 
 #[derive(Debug, Serialize, Deserialize, SizeOf)]
@@ -69,7 +72,7 @@ pub struct RelativePath {
 
 pub fn draw_tile(
     pixmap: &mut Pixmap,
-    data: &[u8],
+    data: impl Read,
     (min_x, max_x, min_y, max_y): (f64, f64, f64, f64),
 ) {
     let (string_table, zana_data) = read_zana_data(data);
@@ -111,7 +114,7 @@ pub fn draw_tile(
 
     pixmap.fill(Color::BLACK);
     fn has_tag(p: &ZanaPath, tag: u64) -> bool {
-        p.tags.iter().find(|(k, _)| *k == tag).is_some()
+        p.tags.iter().any(|(k, _)| *k == tag)
     }
 
     for obj in &zana_data {
@@ -130,7 +133,7 @@ pub fn draw_tile(
                 if let Some(s) = style {
                     draw_path(
                         pixmap,
-                        &p,
+                        p,
                         &node_id_hashmap,
                         (min_x, min_y),
                         (x_scale, y_scale),
@@ -156,12 +159,7 @@ fn draw_path(
     scale: (f64, f64),
     PaintStyle { paint, stroke }: &PaintStyle,
 ) {
-    let offset_and_scale = |x: f64, y: f64| {
-        (
-            (x as f64 - offset.0) * scale.0,
-            (y as f64 - offset.1) * scale.1,
-        )
-    };
+    let offset_and_scale = |x: f64, y: f64| ((x - offset.0) * scale.0, (y - offset.1) * scale.1);
     let mut pb = PathBuilder::new();
     let node_coords = p
         .nodes
@@ -179,7 +177,7 @@ fn draw_path(
         pb.line_to(x as f32, y as f32);
     }
     if let Some(p) = pb.finish() {
-        pixmap.stroke_path(&p, &paint, &stroke, SkiaTransform::identity(), None);
+        pixmap.stroke_path(&p, paint, stroke, SkiaTransform::identity(), None);
     }
 }
 
@@ -230,4 +228,206 @@ pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
         string_table.size_of()
     );
     (string_table, result)
+}
+
+#[derive(Default, Clone)]
+pub struct StringTable {
+    map: HashMap<String, u64>,
+}
+
+impl StringTable {
+    pub fn new(map: HashMap<String, u64>) -> Self {
+        StringTable { map }
+    }
+    pub fn intern(&mut self, s: &str) -> u64 {
+        let next_idx = self.map.len() as u64 + 1;
+        match self.map.get(s) {
+            Some(n) => *n,
+            None => {
+                self.map.insert(s.to_string(), next_idx);
+                next_idx
+            }
+        }
+    }
+    pub fn inverse(self) -> HashMap<u64, String> {
+        self.map.into_iter().map(|(k, v)| (v, k)).collect()
+    }
+
+    pub fn diff(self, other: StringTable) -> impl Iterator<Item = (String, u64)> {
+        self.map
+            .into_iter()
+            .filter(move |(k, _v)| !other.map.contains_key(k))
+    }
+
+    pub fn get_map(self) -> HashMap<String, u64> {
+        self.map
+    }
+}
+
+pub fn write_zana_data(
+    nodes: Vec<ZanaNode>,
+    paths: Vec<ZanaPath>,
+    lookup_table: &HashMap<u64, String>,
+    f: impl Write,
+) {
+    let mut output_string_table = StringTable::default();
+    // let dids = paths.iter().map(|w| w.id).deltas().collect_vec();
+    let dnodes = paths
+        .iter()
+        .map(|w| w.nodes.iter().copied().deltas().collect_vec())
+        .collect_vec();
+    let mut tags = vec![];
+
+    let mut node_ids = vec![];
+    let mut node_lats = vec![];
+    let mut node_lons = vec![];
+
+    for node in nodes {
+        node_ids.push(node.id);
+        node_lats.push(node.coords.decimicro_lat);
+        node_lons.push(node.coords.decimicro_lon);
+    }
+
+    let dense_nodes = ZanaDenseNodes {
+        dids: node_ids.into_iter().deltas().collect(),
+        dlats: node_lats.into_iter().deltas().collect(),
+        dlons: node_lons.into_iter().deltas().collect(),
+    };
+
+    for w in paths.iter() {
+        for (key, value) in w.tags.iter() {
+            tags.push(output_string_table.intern(&lookup_table[key]));
+            tags.push(output_string_table.intern(&lookup_table[value]));
+        }
+        tags.push(0)
+    }
+    // remove last 0
+    if !tags.is_empty() {
+        tags.pop();
+    }
+
+    let f = FrameEncoder::new(f).auto_finish();
+    bincode::DefaultOptions::new()
+        .serialize_into(
+            f,
+            &ZanaDenseData {
+                nodes: dense_nodes,
+                paths: ZanaDensePaths {
+                    dids: vec![],
+                    dnodes,
+                    tags,
+                },
+                string_table: output_string_table.map,
+            },
+        )
+        .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+
+    use itertools::Itertools;
+
+    use crate::{
+        coords::GeoCoord, read_zana_data, write_zana_data, StringTable, ZanaNode, ZanaPath,
+    };
+
+    #[test]
+    fn smoke_test_string_table() {
+        let mut t = StringTable::default();
+        assert_eq!(t.intern("a"), 1);
+        assert_eq!(t.intern("b"), 2);
+        assert_eq!(t.intern("a"), 1);
+
+        assert_eq!(
+            t.map,
+            [("a".into(), 1), ("b".into(), 2)].into_iter().collect()
+        )
+    }
+
+    #[test]
+    fn smoke_test_read_write() {
+        let st = [("map", 1), ("q3dm5", 2)]
+            .into_iter()
+            .map(|(s, id)| (s.into(), id))
+            .collect();
+
+        let n = |i| ZanaNode {
+            id: i,
+            coords: GeoCoord {
+                decimicro_lat: 5 + (i as i32),
+                decimicro_lon: 6,
+            },
+        };
+        let mut output = Vec::new();
+        write_zana_data(
+            vec![n(1), n(2), n(3)],
+            vec![ZanaPath {
+                nodes: vec![1, 2, 3],
+                tags: vec![(1, 2)],
+            }],
+            &StringTable::new(st).inverse(),
+            &mut output,
+        );
+        let (string_table, objects) = read_zana_data(std::io::Cursor::new(output));
+
+        let string_table = string_table
+            .into_iter()
+            .map(|(k, v)| format!("{k}:{v}"))
+            .sorted()
+            .collect_vec();
+
+        insta::assert_debug_snapshot!(string_table, @r###"
+        [
+            "map:1",
+            "q3dm5:2",
+        ]
+        "###);
+        insta::assert_debug_snapshot!(objects, @r###"
+        [
+            Node(
+                ZanaNode {
+                    id: 1,
+                    coords: GeoCoord {
+                        decimicro_lat: 6,
+                        decimicro_lon: 6,
+                    },
+                },
+            ),
+            Node(
+                ZanaNode {
+                    id: 2,
+                    coords: GeoCoord {
+                        decimicro_lat: 7,
+                        decimicro_lon: 6,
+                    },
+                },
+            ),
+            Node(
+                ZanaNode {
+                    id: 3,
+                    coords: GeoCoord {
+                        decimicro_lat: 8,
+                        decimicro_lon: 6,
+                    },
+                },
+            ),
+            Path(
+                ZanaPath {
+                    nodes: [
+                        1,
+                        2,
+                        3,
+                    ],
+                    tags: [
+                        (
+                            1,
+                            2,
+                        ),
+                    ],
+                },
+            ),
+        ]
+        "###);
+    }
 }

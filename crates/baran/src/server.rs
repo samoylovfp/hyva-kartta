@@ -17,7 +17,7 @@ pub fn serve() {
                 println!("request {:?}", rq.url());
                 match rq
                     .url()
-                    .strip_prefix("/")
+                    .strip_prefix('/')
                     .unwrap_or(rq.url())
                     .split('/')
                     .collect_vec()
@@ -57,7 +57,7 @@ fn list_db_files() -> anyhow::Result<Response<Cursor<Vec<u8>>>> {
 }
 
 fn load_file(path: &str) -> anyhow::Result<Response<BufReader<File>>> {
-    if path.contains("/") {
+    if path.contains('/') {
         bail!("no slashes in path names")
     }
     let root = PathBuf::from("h3");

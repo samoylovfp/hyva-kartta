@@ -1,7 +1,7 @@
 use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use geo_types::Coord;
 use h3o::LatLng;
-use log::{debug, info};
+
 use serde::Deserialize;
 use size_of::SizeOf;
 
@@ -48,7 +48,6 @@ impl GeoCoord {
         )
     }
 }
-
 
 impl PicMercator {
     pub fn unproject(&self) -> GeoCoord {

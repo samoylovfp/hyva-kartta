@@ -1,4 +1,4 @@
-use idb::{Database, Error, Factory, IndexParams, KeyPath, ObjectStoreParams};
+use idb::{Database, Error, Factory, ObjectStoreParams};
 
 pub async fn create_database() -> Result<Database, Error> {
     // Get a factory instance from global scope
@@ -16,7 +16,7 @@ pub async fn create_database() -> Result<Database, Error> {
         let store_params = ObjectStoreParams::new();
 
         // Create object store
-        let store = database.create_object_store("cells", store_params).unwrap();
+        let _store = database.create_object_store("cells", store_params).unwrap();
     });
 
     // `await` open request
