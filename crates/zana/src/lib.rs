@@ -12,12 +12,12 @@ use delta_encoding::{DeltaDecoderExt, DeltaEncoderExt};
 pub use geo_types::Coord;
 pub use h3o::{CellIndex, LatLng, Resolution};
 use itertools::{izip, Itertools};
-use log::debug;
+use log::{debug, trace};
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use serde::{Deserialize, Serialize};
 use size_of::SizeOf;
-pub use tiny_skia::Pixmap;
-use tiny_skia::{Color, Paint, PathBuilder, Stroke, Transform as SkiaTransform};
+pub use tiny_skia::{Color, Pixmap};
+use tiny_skia::{Paint, PathBuilder, Stroke, Transform as SkiaTransform};
 
 #[derive(Debug, Clone)]
 pub struct Path {
@@ -91,17 +91,10 @@ pub fn draw_tile(
     let power_tag = find_tag("power");
     let highways_tag = find_tag("highway");
 
-    let mut building_style = PaintStyle::default();
-    building_style.paint.set_color_rgba8(20, 100, 20, 255);
-    building_style.stroke.width = 2.0;
-
-    let mut highway_style = PaintStyle::default();
-    highway_style.paint.set_color_rgba8(255, 150, 20, 50);
-    highway_style.stroke.width = 2.0;
-
-    let mut power_style = PaintStyle::default();
-    power_style.paint.set_color_rgba8(10, 100, 255, 150);
-    power_style.stroke.width = 3.0;
+    let building_style = PaintStyle::new((20, 100, 20, 50), 0.1);
+    let highway_style = PaintStyle::new((255, 150, 20, 5), 0.1);
+    let power_style = PaintStyle::new((0, 100, 255, 150), 1.0);
+    let _default = PaintStyle::new((5, 5, 5, 0), 0.1);
 
     let x_span = max_x - min_x;
     let y_span = max_y - min_y;
@@ -112,7 +105,6 @@ pub fn draw_tile(
     let x_scale = x_size as f64 / x_span;
     let y_scale = y_size as f64 / y_span;
 
-    pixmap.fill(Color::BLACK);
     fn has_tag(p: &ZanaPath, tag: u64) -> bool {
         p.tags.iter().any(|(k, _)| *k == tag)
     }
@@ -145,10 +137,19 @@ pub fn draw_tile(
     }
 }
 
-#[derive(Default)]
 struct PaintStyle<'paint> {
     paint: Paint<'paint>,
     stroke: Stroke,
+}
+
+impl PaintStyle<'_> {
+    fn new(color: (u8, u8, u8, u8), width: f32) -> Self {
+        let mut paint = Paint::default();
+        let mut stroke = Stroke::default();
+        paint.set_color_rgba8(color.0, color.1, color.2, color.3);
+        stroke.width = width;
+        Self { paint, stroke }
+    }
 }
 
 fn draw_path(
@@ -173,10 +174,12 @@ fn draw_path(
     }
     for node in &node_coords[1..] {
         let PicMercator { x, y } = node.project();
+        trace!("mercator: {x}:{y}");
         let (x, y) = offset_and_scale(x, y);
         pb.line_to(x as f32, y as f32);
     }
     if let Some(p) = pb.finish() {
+        trace!("{p:?}");
         pixmap.stroke_path(&p, paint, stroke, SkiaTransform::identity(), None);
     }
 }
