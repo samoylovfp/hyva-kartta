@@ -146,6 +146,7 @@ struct PaintStyle<'paint> {
 impl PaintStyle<'_> {
     fn new(color: (u8, u8, u8, u8), width: f32) -> Self {
         let mut paint = Paint::default();
+        paint.anti_alias = false;
         let mut stroke = Stroke::default();
         paint.set_color_rgba8(color.0, color.1, color.2, color.3);
         stroke.width = width;
