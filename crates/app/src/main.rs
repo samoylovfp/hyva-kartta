@@ -102,7 +102,7 @@ impl App {
                     let Some(mut pixmap) = Pixmap::new(width as u32, height as u32) else {continue};
                     let data = get_cell(&db, cell).await;
 
-                    // FIXME: bounding box instead of tuple of 4 floats
+                    
                     draw_tile(&mut pixmap, data.as_slice(), bbox);
                     let res = DrawnCell { cell, data: pixmap };
                     results.push(pixmap_to_imagedata(res).await);
