@@ -14,6 +14,7 @@ use gloo::{
 };
 use hyka::db::create_database;
 use idb::{Database, Query};
+use instant::Instant;
 use itertools::Itertools;
 use log::{debug, info};
 use serde::Deserialize;
@@ -26,14 +27,16 @@ use web_sys::{
 };
 use yew::{html, Callback, Component, NodeRef};
 use zana::{
+    cell_to_bounding_box,
     coords::{GeoCoord, PicMercator},
     draw_hex, filter_cells_with_mercator_rectangle,
     h3o::{CellIndex, LatLng, Resolution},
-    Mercator, cell_to_bounding_box,
+    Mercator, PicMercatorBoundingBox,
 };
 
 struct App {
     view_center: PicMercator,
+    /// mercator / pix
     mercator_scale: f64,
     canvas: NodeRef,
     html_size: (u32, u32),
@@ -45,7 +48,7 @@ struct App {
 }
 
 impl App {
-    fn compose_tiles(&mut self, callback: Callback<UploadedCell>) {
+    fn compose_tiles(&mut self, callback: Callback<Vec<UploadedCell>>) {
         let canvas: HtmlCanvasElement = self.canvas.cast().unwrap();
         let ctx: CanvasRenderingContext2d = canvas
             .get_context("2d")
@@ -53,34 +56,68 @@ impl App {
             .unwrap()
             .dyn_into()
             .unwrap();
-        let (x, y) = get_body_size();
-        let ratio = x as f64 / y as f64;
+        let (width, height) = get_body_size();
 
-        let cells = filter_cells_with_mercator_rectangle(
-            &self.downloaded_cells,
-            self.view_center.clone(),
-            ratio,
-            self.mercator_scale,
-        );
-        for &cell in &cells {
-            let mut pixmap = Pixmap::new(1024, 1024).unwrap();
-            pixmap.fill(Color::BLACK);
-            draw_hex(cell, &mut pixmap);
-            let res = DrawnCell {
-                cell,
-                data: pixmap,
-            };
-            if !self.drawn_cells.contains_key(&cell) {
-                let cb = callback.clone();
-                spawn_local(async move {
-                    let img_data = pixmap_to_imagedata(res).await;
-                    cb.emit(img_data)
-                })
-            }
+        let quarter_screen = PicMercator {
+            x: width as f64 / 2.0 * self.mercator_scale,
+            y: height as f64 / 2.0 * self.mercator_scale,
+        };
+
+        let bbox = PicMercatorBoundingBox {
+            top_left: self.view_center.clone() - quarter_screen.clone(),
+            bottom_right: self.view_center.clone() + quarter_screen,
+        };
+
+        let cells = filter_cells_with_mercator_rectangle(&self.downloaded_cells, bbox);
+        ctx.clear_rect(0.0, 0.0, width as f64, height as f64);
+        let cells_to_draw = cells
+            .clone()
+            .into_iter()
+            .filter(|c| !self.drawn_cells.contains_key(c))
+            .collect_vec();
+        if !cells_to_draw.is_empty() {
+            spawn_local(async move {
+                let mut results = vec![];
+                let start = Instant::now();
+                let cells_count = cells_to_draw.len();
+                for cell in cells_to_draw {
+                    let mut pixmap = Pixmap::new(256, 256).unwrap();
+                    // pixmap.fill(Color::BLACK);
+                    draw_hex(cell, &mut pixmap);
+                    let res = DrawnCell { cell, data: pixmap };
+                    results.push(pixmap_to_imagedata(res).await);
+                }
+                info!("Rendered {cells_count} cells in {:?}", start.elapsed());
+
+                callback.emit(results)
+            })
         }
+
         self.drawn_cells.retain(|k, _v| cells.contains(k));
+        debug!("Composing {} cells", self.drawn_cells.len());
         for (cell, data) in &self.drawn_cells {
             let bounding_box = cell_to_bounding_box(*cell);
+            let width_px =
+                (bounding_box.bottom_right.x - bounding_box.top_left.x) / self.mercator_scale;
+            let screen_top_left_coords = self.view_center.clone()
+                - PicMercator {
+                    x: width as f64 * self.mercator_scale / 2.0,
+                    y: height as f64 * self.mercator_scale / 2.0,
+                };
+            let mercator_offset = bounding_box.bottom_right - screen_top_left_coords;
+            let screen_offset = (
+                mercator_offset.x / self.mercator_scale,
+                mercator_offset.y / self.mercator_scale,
+            );
+            debug!("{cell} {screen_offset:?} wide: {width_px}");
+            ctx.draw_image_with_image_bitmap_and_dw_and_dh(
+                &data.data,
+                screen_offset.0,
+                screen_offset.1,
+                width_px,
+                width_px,
+            )
+            .unwrap();
         }
 
         // for cell in cells {
@@ -151,7 +188,7 @@ enum Msg {
     ReadFiles(Vec<String>),
     Recompose,
     GeoMoved(MovedEvent),
-    Rendered(UploadedCell),
+    Rendered(Vec<UploadedCell>),
     PanStart(PanEvent),
     Pan(PanEvent),
     PanStop,
@@ -200,13 +237,15 @@ impl Component for App {
         let helsinki = GeoCoord::from_latlon(60.1684, 24.9438);
 
         let recompose = ctx.link().callback(|_| Msg::Recompose);
+        // trigger the resize immediately
+        recompose.emit(());
 
         App {
             view_center: helsinki.into(),
             canvas: NodeRef::default(),
             html_size: get_body_size(),
             animation_frame: request_animation_frame(move |_| recompose.emit(())),
-            mercator_scale: 0.001,
+            mercator_scale: 0.0001,
             downloaded_cells: vec![],
             pan_start: None,
             visible_cells: Default::default(),
@@ -244,8 +283,10 @@ impl Component for App {
                 // spawn_local(self.compose_tiles());
                 // self.animation_frame = request_animation_frame(move |_| recompose.emit(()));
             }
-            Msg::Rendered(cell) => {
-                self.drawn_cells.insert(cell.cell, cell);
+            Msg::Rendered(cells) => {
+                self.drawn_cells
+                    .extend(cells.into_iter().map(|c| (c.cell, c)));
+                recompose.emit(());
             }
             Msg::PanStart(pan_event) => {
                 self.pan_start = Some((pan_event, self.view_center.clone()))
@@ -263,9 +304,10 @@ impl Component for App {
                     if sid == id {
                         let dx = x - sx;
                         let dy = y - sy;
+                        // FIXME: why is this minus?
                         self.view_center = PicMercator {
-                            x: start_center.x + dx as f64 * self.mercator_scale,
-                            y: start_center.y + dy as f64 * self.mercator_scale,
+                            x: start_center.x - dx as f64 * self.mercator_scale,
+                            y: start_center.y - dy as f64 * self.mercator_scale,
                         };
                         debug!("Panned to {:?}", self.view_center);
                         self.animation_frame = request_animation_frame(move |_| recompose.emit(()));
@@ -357,6 +399,7 @@ async fn pixmap_to_imagedata(DrawnCell { cell, data }: DrawnCell) -> UploadedCel
 //     JsFuture::from(future).await.unwrap().into()
 // }
 fn main() {
+    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     wasm_logger::init(wasm_logger::Config::default());
     yew::Renderer::<App>::new().render();
 }

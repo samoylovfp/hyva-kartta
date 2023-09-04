@@ -1019,6 +1019,7 @@ name = "hyka"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "console_error_panic_hook",
  "gloo 0.9.0",
  "idb",
  "instant",

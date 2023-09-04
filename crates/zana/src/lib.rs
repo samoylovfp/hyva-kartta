@@ -238,36 +238,39 @@ pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
 
 pub fn filter_cells_with_mercator_rectangle(
     cells: &[CellIndex],
-    view_center: impl Into<PicMercator>,
-    ratio: f64,
-    scale: f64,
+    bbox: PicMercatorBoundingBox
 ) -> Vec<CellIndex> {
-    let mercator_center = view_center.into();
 
-    let vertical_scale = scale / ratio;
-    let mercator_left = mercator_center.x - scale / 2.0;
-    let mercator_right = mercator_center.x + scale / 2.0;
-    // this is picmercator, so top has lower y coordinate
-    let mercator_top = mercator_center.y - vertical_scale / 2.0;
-    let mercator_bottom = mercator_center.y + vertical_scale / 2.0;
+    let mercator_top = -bbox.top_left.y;
+    let mercator_left = bbox.top_left.x;
+    let mercator_right = bbox.bottom_right.x;
+    let mercator_bottom = -bbox.bottom_right.y;
+    // let mercator_center = view_center.into();
+
+    // let vertical_scale = scale / ratio;
+    // let mercator_left = mercator_center.x - scale / 2.0;
+    // let mercator_right = mercator_center.x + scale / 2.0;
+    // // this is picmercator, so top has lower y coordinate
+    // let mercator_top = mercator_center.y - vertical_scale / 2.0;
+    // let mercator_bottom = mercator_center.y + vertical_scale / 2.0;
 
     let proj = Mercator {};
 
     let topleft = proj.invert(&Coord {
         x: mercator_left,
-        y: -mercator_top,
+        y: mercator_top,
     });
     let topright = proj.invert(&Coord {
         x: mercator_right,
-        y: -mercator_top,
+        y: mercator_top,
     });
     let bottomleft = proj.invert(&Coord {
         x: mercator_left,
-        y: -mercator_bottom,
+        y: mercator_bottom,
     });
     let bottomright = proj.invert(&Coord {
         x: mercator_right,
-        y: -mercator_bottom,
+        y: mercator_bottom,
     });
 
     let geo_polygon = geo::polygon!(topleft, topright, bottomright, bottomleft);
@@ -521,15 +524,17 @@ pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap) {
     path.close();
 
     let mut paint = Paint::default();
-    paint.set_color_rgba8(200, 200, 0, 255);
+    paint.set_color_rgba8(200, 200, 0, 100);
 
-    pixmap.stroke_path(
-        &path.finish().unwrap(),
-        &paint,
-        &Stroke::default(),
-        SkiaTransform::identity(),
-        None,
-    );
+    pixmap.fill_path(&path.finish().unwrap(), &paint, tiny_skia::FillRule::EvenOdd, SkiaTransform::identity(), None);
+
+    // pixmap.stroke_path(
+    //     &path.finish().unwrap(),
+    //     &paint,
+    //     &Stroke::default(),
+    //     SkiaTransform::identity(),
+    //     None,
+    // );
 }
 
 pub struct PicMercatorBoundingBox {

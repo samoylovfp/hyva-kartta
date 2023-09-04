@@ -1,3 +1,5 @@
+use std::ops::{Add, Sub};
+
 use d3_geo_rs::{projection::mercator::Mercator, Transform};
 use geo_types::Coord;
 use h3o::LatLng;
@@ -19,6 +21,28 @@ pub struct GeoCoord {
 pub struct PicMercator {
     pub x: f64,
     pub y: f64,
+}
+
+impl Sub for PicMercator {
+    type Output = PicMercator;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+        }
+    }
+}
+
+impl Add for PicMercator {
+    type Output = PicMercator;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
 }
 
 impl GeoCoord {
