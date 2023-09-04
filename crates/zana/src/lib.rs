@@ -242,14 +242,6 @@ pub fn filter_cells_with_mercator_rectangle(
     let mercator_left = bbox.top_left.x;
     let mercator_right = bbox.bottom_right.x;
     let mercator_bottom = -bbox.bottom_right.y;
-    // let mercator_center = view_center.into();
-
-    // let vertical_scale = scale / ratio;
-    // let mercator_left = mercator_center.x - scale / 2.0;
-    // let mercator_right = mercator_center.x + scale / 2.0;
-    // // this is picmercator, so top has lower y coordinate
-    // let mercator_top = mercator_center.y - vertical_scale / 2.0;
-    // let mercator_bottom = mercator_center.y + vertical_scale / 2.0;
 
     let proj = Mercator {};
 
