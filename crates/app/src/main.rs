@@ -78,6 +78,7 @@ impl App {
             .clone()
             .into_iter()
             .filter(|c| !self.drawn_cells.contains_key(c))
+            .take(20)
             .collect_vec();
 
         if !cells_to_draw.is_empty() {
