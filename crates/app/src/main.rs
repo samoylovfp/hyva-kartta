@@ -71,7 +71,7 @@ impl App {
             top_left: self.view_center.clone() - quarter_screen.clone(),
             bottom_right: self.view_center.clone() + quarter_screen,
         };
-
+        // FIXME: cells disappear too early
         let cells = filter_cells_with_mercator_rectangle(&self.downloaded_cells, bbox);
         ctx.clear_rect(0.0, 0.0, width as f64, height as f64);
         let cells_to_draw = cells
@@ -98,10 +98,8 @@ impl App {
                 for cell in cells_to_draw {
                     let bbox = cell_to_bounding_box(cell);
                     let (width, height) = bbox.sizes(scale);
-                    // info!("w:h {width}:{height} for {bbox:?}");
 
                     let Some(mut pixmap) = Pixmap::new(width as u32, height as u32) else {continue};
-                    // draw_hex(cell, &mut pixmap, 10.0);
                     let data = get_cell(&db, cell).await;
 
                     // FIXME: bounding box instead of tuple of 4 floats
@@ -120,8 +118,6 @@ impl App {
         for (cell, data) in &self.drawn_cells {
             let DeferredCell::Done(data) = data else {continue};
             let bounding_box = cell_to_bounding_box(*cell);
-            let width_px =
-                (bounding_box.bottom_right.x - bounding_box.top_left.x) / self.mercator_scale;
             let screen_top_left_coords = self.view_center.clone()
                 - PicMercator {
                     x: width as f64 * self.mercator_scale / 2.0,
@@ -133,7 +129,6 @@ impl App {
                 mercator_offset.y / self.mercator_scale,
             );
             let (width, height) = bounding_box.sizes(self.mercator_scale);
-            debug!("{cell} {screen_offset:?} wide: {width_px}");
             ctx.draw_image_with_image_bitmap_and_dw_and_dh(
                 &data.data,
                 screen_offset.0,
@@ -143,26 +138,6 @@ impl App {
             )
             .unwrap();
         }
-
-        // for cell in cells {
-        //     if !self.
-        //     let (top_left, w, h, data) = draw_hex(cell);
-        //             ctx.draw_image_with_image_bitmap(
-
-        //     ((time.as_secs_f64() / speed).sin() + 1.0) * 100.0,
-        //     ((time.as_secs_f64() / speed).cos() + 1.0) * 100.0,
-        // ).unwrap();
-        // }
-
-        // info!("{cells:?}");
-
-        // for cell in visible_cells :
-        // ctx.draw_image_with_image_bitmap(
-        //     image_data,
-        //     ((time.as_secs_f64() / speed).sin() + 1.0) * 100.0,
-        //     ((time.as_secs_f64() / speed).cos() + 1.0) * 100.0,
-        // )
-        // .unwrap();
     }
 }
 
@@ -187,16 +162,6 @@ async fn get_cell(db: &Database, cell: CellIndex) -> Vec<u8> {
     BASE64_STANDARD_NO_PAD
         .decode(value.as_string().unwrap())
         .unwrap()
-    // while res >= Resolution::Three {
-    //     let cell = coord.to_cell(res);
-    //     let key = format!("{cell}.zan");
-    //     if let Some(o) = store.get(Query::Key(key.into())).await.unwrap() {
-    //         let s = o.as_string().unwrap();
-    //         return Some((cell, BASE64_STANDARD_NO_PAD.decode(s).unwrap()));
-    //     }
-    //     res = res.pred().unwrap();
-    // }
-    // None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,10 +188,11 @@ enum Msg {
 }
 
 fn get_body_size() -> (u32, u32) {
+    let dpr = window().device_pixel_ratio();
     let body = body();
     (
-        body.client_width().try_into().unwrap(),
-        body.client_height().try_into().unwrap(),
+        (body.client_width() as f64 * dpr) as u32,
+        (body.client_height() as f64 * dpr) as u32,
     )
 }
 
@@ -263,17 +229,19 @@ impl Component for App {
         move_listener.forget();
 
         let helsinki = GeoCoord::from_latlon(60.1684, 24.9438);
+        let berlin = GeoCoord::from_latlon(52.5100, 13.4031);
+        let start = if false { helsinki } else { berlin };
 
         let recompose = ctx.link().callback(|_| Msg::Recompose);
         // Trigger redraw immediately
         ctx.link().send_message(Msg::Resized);
 
         App {
-            view_center: helsinki.into(),
+            view_center: start.into(),
             canvas: NodeRef::default(),
             html_size: get_body_size(),
             animation_frame: request_animation_frame(move |_| recompose.emit(())),
-            mercator_scale: 0.00001,
+            mercator_scale: 0.000001,
             downloaded_cells: vec![],
             pan_start: None,
             drawn_cells: Default::default(),
@@ -320,6 +288,7 @@ impl Component for App {
                 self.pan_start = Some((pan_event, self.view_center.clone()))
             }
             Msg::Pan(PanEvent { x, y, id }) => {
+                let dpr = window().device_pixel_ratio();
                 if let Some((
                     PanEvent {
                         x: sx,
@@ -334,8 +303,8 @@ impl Component for App {
                         let dy = y - sy;
                         // FIXME: why is this minus?
                         self.view_center = PicMercator {
-                            x: start_center.x - dx as f64 * self.mercator_scale,
-                            y: start_center.y - dy as f64 * self.mercator_scale,
+                            x: start_center.x - dx as f64 * self.mercator_scale * dpr,
+                            y: start_center.y - dy as f64 * self.mercator_scale * dpr,
                         };
                         debug!("Panned to {:?}", self.view_center);
                         self.animation_frame = request_animation_frame(move |_| recompose.emit(()));
@@ -393,39 +362,6 @@ async fn pixmap_to_imagedata(DrawnCell { cell, data }: DrawnCell) -> UploadedCel
     }
 }
 
-// async fn draw_cell(cell: CellIndex, data: &[u8]) -> ImageBitmap {
-//     let boundary = cell.boundary();
-//     let proj = Mercator {};
-//     let projected_boundary = boundary.into_iter().map(|b| {
-//         proj.transform(&Coord {
-//             x: b.lng_radians(),
-//             y: -b.lat_radians(),
-//         })
-//     });
-
-//     let (min_x, max_x) = projected_boundary
-//         .clone()
-//         .map(|c| c.x)
-//         .minmax()
-//         .into_option()
-//         .unwrap();
-//     let (min_y, max_y) = projected_boundary
-//         .map(|c| c.y)
-//         .minmax()
-//         .into_option()
-//         .unwrap();
-
-//     let mut pixmap = Pixmap::new(1024, 1024).unwrap();
-
-//     draw_tile(&mut pixmap, data, (min_x, max_x, min_y, max_y));
-
-//     let future = window()
-//         .create_image_bitmap_with_image_data(
-//             &ImageData::new_with_u8_clamped_array(Clamped(&pixmap.data()), pixmap.width()).unwrap(),
-//         )
-//         .unwrap();
-//     JsFuture::from(future).await.unwrap().into()
-// }
 fn main() {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     wasm_logger::init(wasm_logger::Config::new(log::Level::Info));
