@@ -63,8 +63,8 @@ impl App {
         let (width, height) = get_body_size();
 
         let quarter_screen = PicMercator {
-            x: width as f64 / 2.0 * self.mercator_scale,
-            y: height as f64 / 2.0 * self.mercator_scale,
+            x: width as f64 * self.mercator_scale,
+            y: height as f64 * self.mercator_scale,
         };
 
         let bbox = PicMercatorBoundingBox {
