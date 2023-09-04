@@ -82,7 +82,6 @@ impl App {
             .collect_vec();
         if !cells_to_draw.is_empty() {
             self.drawn_cells.extend(cells_to_draw.iter().copied().map(|c|(c, DeferredCell::Waiting)));
-            // FIXME: concurrent drawing, should be fixed with a worker?
             spawn_local(async move {
                 let mut results = vec![];
                 let start = Instant::now();
@@ -90,11 +89,12 @@ impl App {
                 info!("Drawing {cells_count} cells...");
                 let db = create_database().await.unwrap();
                 for cell in cells_to_draw {
+                    // FIXME: size based on size of the cell
                     let mut pixmap = Pixmap::new(256, 256).unwrap();
-                    // pixmap.fill(Color::BLACK);
                     draw_hex(cell, &mut pixmap, 10.0);
                     let data = get_cell(&db, cell).await;
                     let bbox = cell_to_bounding_box(cell);
+                    // FIXME: bounding box instead of tuple of 4 floats
                     draw_tile(
                         &mut pixmap,
                         data.as_slice(),
