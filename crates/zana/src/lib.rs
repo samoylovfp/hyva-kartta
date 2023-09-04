@@ -73,11 +73,7 @@ pub struct RelativePath {
     relative_points: Vec<(i32, i32)>,
 }
 
-pub fn draw_tile(
-    pixmap: &mut Pixmap,
-    data: impl Read,
-    (min_x, max_x, min_y, max_y): (f64, f64, f64, f64),
-) {
+pub fn draw_tile(pixmap: &mut Pixmap, data: impl Read, bbox: PicMercatorBoundingBox) {
     let (string_table, zana_data) = read_zana_data(data);
 
     let node_id_hashmap: HashMap<_, _> = zana_data
@@ -99,8 +95,8 @@ pub fn draw_tile(
     let power_style = PaintStyle::new((0, 100, 255, 150), 1.0);
     let _default = PaintStyle::new((5, 5, 5, 0), 0.1);
 
-    let x_span = max_x - min_x;
-    let y_span = max_y - min_y;
+    let x_span = bbox.bottom_right.x - bbox.top_left.x;
+    let y_span = bbox.bottom_right.y - bbox.top_left.y;
     assert!(x_span > 0.0, "x_span: {x_span}");
     assert!(y_span > 0.0, "y_span: {y_span}");
 
@@ -132,7 +128,7 @@ pub fn draw_tile(
                         pixmap,
                         p,
                         &node_id_hashmap,
-                        (min_x, min_y),
+                        (bbox.top_left.x, bbox.top_left.y),
                         (x_scale, y_scale),
                         s,
                     )
@@ -547,9 +543,18 @@ pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap, width: f32) {
     );
 }
 
+#[derive(Debug)]
 pub struct PicMercatorBoundingBox {
     pub top_left: PicMercator,
     pub bottom_right: PicMercator,
+}
+impl PicMercatorBoundingBox {
+    pub fn sizes(&self, scale: f64) -> (f64, f64) {
+        let width = (self.bottom_right.x - self.top_left.x) / scale;
+        // because Y goes up to down
+        let height = (self.bottom_right.y - self.top_left.y) / scale;
+        (width, height)
+    }
 }
 
 pub fn cell_to_bounding_box(cell: CellIndex) -> PicMercatorBoundingBox {
@@ -568,8 +573,9 @@ pub fn cell_to_bounding_box(cell: CellIndex) -> PicMercatorBoundingBox {
         .into_option()
         .unwrap();
 
+    // y is flipped in pic mercator, so top is has higher lat value
     PicMercatorBoundingBox {
-        top_left: GeoCoord::from_latlon(min_lat, min_lon).into(),
-        bottom_right: GeoCoord::from_latlon(max_lat, max_lon).into(),
+        top_left: GeoCoord::from_latlon(max_lat, min_lon).into(),
+        bottom_right: GeoCoord::from_latlon(min_lat, max_lon).into(),
     }
 }

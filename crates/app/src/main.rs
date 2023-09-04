@@ -48,7 +48,6 @@ struct App {
     animation_frame: AnimationFrame,
     downloaded_cells: Vec<CellIndex>,
     pan_start: Option<(PanEvent, PicMercator)>,
-    visible_cells: HashSet<CellIndex>,
     drawn_cells: HashMap<CellIndex, DeferredCell>,
 }
 
@@ -80,8 +79,15 @@ impl App {
             .into_iter()
             .filter(|c| !self.drawn_cells.contains_key(c))
             .collect_vec();
+
         if !cells_to_draw.is_empty() {
-            self.drawn_cells.extend(cells_to_draw.iter().copied().map(|c|(c, DeferredCell::Waiting)));
+            self.drawn_cells.extend(
+                cells_to_draw
+                    .iter()
+                    .copied()
+                    .map(|c| (c, DeferredCell::Waiting)),
+            );
+            let scale = self.mercator_scale;
             spawn_local(async move {
                 let mut results = vec![];
                 let start = Instant::now();
@@ -89,22 +95,16 @@ impl App {
                 info!("Drawing {cells_count} cells...");
                 let db = create_database().await.unwrap();
                 for cell in cells_to_draw {
-                    // FIXME: size based on size of the cell
-                    let mut pixmap = Pixmap::new(256, 256).unwrap();
-                    draw_hex(cell, &mut pixmap, 10.0);
-                    let data = get_cell(&db, cell).await;
                     let bbox = cell_to_bounding_box(cell);
+                    let (width, height) = bbox.sizes(scale);
+                    // info!("w:h {width}:{height} for {bbox:?}");
+
+                    let Some(mut pixmap) = Pixmap::new(width as u32, height as u32) else {continue};
+                    // draw_hex(cell, &mut pixmap, 10.0);
+                    let data = get_cell(&db, cell).await;
+
                     // FIXME: bounding box instead of tuple of 4 floats
-                    draw_tile(
-                        &mut pixmap,
-                        data.as_slice(),
-                        (
-                            bbox.top_left.x,
-                            bbox.bottom_right.x,
-                            bbox.bottom_right.y,
-                            bbox.top_left.y,
-                        ),
-                    );
+                    draw_tile(&mut pixmap, data.as_slice(), bbox);
                     let res = DrawnCell { cell, data: pixmap };
                     results.push(pixmap_to_imagedata(res).await);
                 }
@@ -126,18 +126,19 @@ impl App {
                     x: width as f64 * self.mercator_scale / 2.0,
                     y: height as f64 * self.mercator_scale / 2.0,
                 };
-            let mercator_offset = bounding_box.bottom_right - screen_top_left_coords;
+            let mercator_offset = bounding_box.bottom_right.clone() - screen_top_left_coords;
             let screen_offset = (
                 mercator_offset.x / self.mercator_scale,
                 mercator_offset.y / self.mercator_scale,
             );
+            let (width, height) = bounding_box.sizes(self.mercator_scale);
             debug!("{cell} {screen_offset:?} wide: {width_px}");
             ctx.draw_image_with_image_bitmap_and_dw_and_dh(
                 &data.data,
                 screen_offset.0,
                 screen_offset.1,
-                width_px,
-                width_px,
+                width,
+                height,
             )
             .unwrap();
         }
@@ -263,8 +264,8 @@ impl Component for App {
         let helsinki = GeoCoord::from_latlon(60.1684, 24.9438);
 
         let recompose = ctx.link().callback(|_| Msg::Recompose);
-        // trigger the resize immediately
-        recompose.emit(());
+        // Trigger redraw immediately
+        ctx.link().send_message(Msg::Resized);
 
         App {
             view_center: helsinki.into(),
@@ -274,7 +275,6 @@ impl Component for App {
             mercator_scale: 0.00001,
             downloaded_cells: vec![],
             pan_start: None,
-            visible_cells: Default::default(),
             drawn_cells: Default::default(),
         }
     }
@@ -295,6 +295,7 @@ impl Component for App {
             // wasm_bindgen_futures::spawn_local( load_downloaded_files(&db, ctx.link().callback(|f| Msg::ReadFiles(f))));
             Msg::ReadFiles(f) => {
                 info!("Read {:?} cells from db", f);
+                recompose.emit(());
                 self.downloaded_cells = f.into_iter().map(|s| s.parse().unwrap()).collect();
 
                 if self.downloaded_cells.is_empty() {
