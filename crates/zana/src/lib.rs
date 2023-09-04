@@ -94,13 +94,15 @@ pub fn draw_tile(
     let power_tag = find_tag("power");
     let highways_tag = find_tag("highway");
 
-    let building_style = PaintStyle::new((20, 100, 20, 50), 0.1);
-    let highway_style = PaintStyle::new((255, 150, 20, 5), 0.1);
+    let building_style = PaintStyle::new((20, 100, 20, 200), 1.0);
+    let highway_style = PaintStyle::new((255, 150, 20, 200), 1.0);
     let power_style = PaintStyle::new((0, 100, 255, 150), 1.0);
     let _default = PaintStyle::new((5, 5, 5, 0), 0.1);
 
     let x_span = max_x - min_x;
     let y_span = max_y - min_y;
+    assert!(x_span > 0.0, "x_span: {x_span}");
+    assert!(y_span > 0.0, "y_span: {y_span}");
 
     let x_size = pixmap.width();
     let y_size = (x_size as f64 / x_span * y_span) as u32;
@@ -238,9 +240,8 @@ pub fn read_zana_data(r: impl Read) -> (HashMap<String, u64>, Vec<ZanaObj>) {
 
 pub fn filter_cells_with_mercator_rectangle(
     cells: &[CellIndex],
-    bbox: PicMercatorBoundingBox
+    bbox: PicMercatorBoundingBox,
 ) -> Vec<CellIndex> {
-
     let mercator_top = -bbox.top_left.y;
     let mercator_left = bbox.top_left.x;
     let mercator_right = bbox.bottom_right.x;
@@ -526,15 +527,21 @@ pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap) {
     let mut paint = Paint::default();
     paint.set_color_rgba8(200, 200, 0, 100);
 
-    pixmap.fill_path(&path.finish().unwrap(), &paint, tiny_skia::FillRule::EvenOdd, SkiaTransform::identity(), None);
-
-    // pixmap.stroke_path(
+    // pixmap.fill_path(
     //     &path.finish().unwrap(),
     //     &paint,
-    //     &Stroke::default(),
+    //     tiny_skia::FillRule::EvenOdd,
     //     SkiaTransform::identity(),
     //     None,
     // );
+
+    pixmap.stroke_path(
+        &path.finish().unwrap(),
+        &paint,
+        &Stroke::default(),
+        SkiaTransform::identity(),
+        None,
+    );
 }
 
 pub struct PicMercatorBoundingBox {

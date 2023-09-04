@@ -29,7 +29,7 @@ use yew::{html, Callback, Component, NodeRef};
 use zana::{
     cell_to_bounding_box,
     coords::{GeoCoord, PicMercator},
-    draw_hex, filter_cells_with_mercator_rectangle,
+    draw_hex, draw_tile, filter_cells_with_mercator_rectangle,
     h3o::{CellIndex, LatLng, Resolution},
     Mercator, PicMercatorBoundingBox,
 };
@@ -76,14 +76,29 @@ impl App {
             .filter(|c| !self.drawn_cells.contains_key(c))
             .collect_vec();
         if !cells_to_draw.is_empty() {
+            // FIXME: concurrent drawing, should be fixed with a worker?
             spawn_local(async move {
                 let mut results = vec![];
                 let start = Instant::now();
                 let cells_count = cells_to_draw.len();
+                info!("Drawing {cells_count} cells...");
+                let db = create_database().await.unwrap();
                 for cell in cells_to_draw {
                     let mut pixmap = Pixmap::new(256, 256).unwrap();
                     // pixmap.fill(Color::BLACK);
                     draw_hex(cell, &mut pixmap);
+                    let data = get_cell(&db, cell).await;
+                    let bbox = cell_to_bounding_box(cell);
+                    draw_tile(
+                        &mut pixmap,
+                        data.as_slice(),
+                        (
+                            bbox.top_left.x,
+                            bbox.bottom_right.x,
+                            bbox.bottom_right.y,
+                            bbox.top_left.y,
+                        ),
+                    );
                     let res = DrawnCell { cell, data: pixmap };
                     results.push(pixmap_to_imagedata(res).await);
                 }
@@ -153,22 +168,26 @@ struct UploadedCell {
     data: ImageBitmap,
 }
 
-async fn find_cell(db: &Database, coord: LatLng) -> Option<(CellIndex, Vec<u8>)> {
-    let mut res = Resolution::Twelve;
+async fn get_cell(db: &Database, cell: CellIndex) -> Vec<u8> {
     let tr = db
         .transaction(&["cells"], idb::TransactionMode::ReadOnly)
         .unwrap();
     let store = tr.object_store("cells").unwrap();
-    while res >= Resolution::Three {
-        let cell = coord.to_cell(res);
-        let key = format!("{cell}.zan");
-        if let Some(o) = store.get(Query::Key(key.into())).await.unwrap() {
-            let s = o.as_string().unwrap();
-            return Some((cell, BASE64_STANDARD_NO_PAD.decode(s).unwrap()));
-        }
-        res = res.pred().unwrap();
-    }
-    None
+    let key = format!("{cell}.zan");
+    let value = store.get(Query::Key(key.into())).await.unwrap().unwrap();
+    BASE64_STANDARD_NO_PAD
+        .decode(value.as_string().unwrap())
+        .unwrap()
+    // while res >= Resolution::Three {
+    //     let cell = coord.to_cell(res);
+    //     let key = format!("{cell}.zan");
+    //     if let Some(o) = store.get(Query::Key(key.into())).await.unwrap() {
+    //         let s = o.as_string().unwrap();
+    //         return Some((cell, BASE64_STANDARD_NO_PAD.decode(s).unwrap()));
+    //     }
+    //     res = res.pred().unwrap();
+    // }
+    // None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,7 +264,7 @@ impl Component for App {
             canvas: NodeRef::default(),
             html_size: get_body_size(),
             animation_frame: request_animation_frame(move |_| recompose.emit(())),
-            mercator_scale: 0.0001,
+            mercator_scale: 0.00001,
             downloaded_cells: vec![],
             pan_start: None,
             visible_cells: Default::default(),
@@ -400,7 +419,7 @@ async fn pixmap_to_imagedata(DrawnCell { cell, data }: DrawnCell) -> UploadedCel
 // }
 fn main() {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
-    wasm_logger::init(wasm_logger::Config::default());
+    wasm_logger::init(wasm_logger::Config::new(log::Level::Info));
     yew::Renderer::<App>::new().render();
 }
 
