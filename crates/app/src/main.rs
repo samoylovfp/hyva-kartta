@@ -102,7 +102,8 @@ impl App {
                     let Some(mut pixmap) = Pixmap::new(width as u32, height as u32) else {continue};
                     let data = get_cell(&db, cell).await;
 
-                    
+                    // FIXME: very slow, take a look at lyon
+                    // https://github.com/nical/lyon/tree/master/examples/wgpu
                     draw_tile(&mut pixmap, data.as_slice(), bbox);
                     let res = DrawnCell { cell, data: pixmap };
                     results.push(pixmap_to_imagedata(res).await);
