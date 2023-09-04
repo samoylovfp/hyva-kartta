@@ -484,7 +484,7 @@ mod tests {
     }
 }
 
-pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap) {
+pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap, width: f32) {
     let boundary = cell.boundary();
     let mut boundary_iter = boundary
         .into_iter()
@@ -527,6 +527,9 @@ pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap) {
     let mut paint = Paint::default();
     paint.set_color_rgba8(200, 200, 0, 100);
 
+    let mut stroke = Stroke::default();
+    stroke.width = width;
+
     // pixmap.fill_path(
     //     &path.finish().unwrap(),
     //     &paint,
@@ -538,7 +541,7 @@ pub fn draw_hex(cell: CellIndex, pixmap: &mut Pixmap) {
     pixmap.stroke_path(
         &path.finish().unwrap(),
         &paint,
-        &Stroke::default(),
+        &stroke,
         SkiaTransform::identity(),
         None,
     );

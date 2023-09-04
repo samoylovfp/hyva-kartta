@@ -34,6 +34,11 @@ use zana::{
     Mercator, PicMercatorBoundingBox,
 };
 
+enum DeferredCell {
+    Waiting,
+    Done(UploadedCell),
+}
+
 struct App {
     view_center: PicMercator,
     /// mercator / pix
@@ -44,7 +49,7 @@ struct App {
     downloaded_cells: Vec<CellIndex>,
     pan_start: Option<(PanEvent, PicMercator)>,
     visible_cells: HashSet<CellIndex>,
-    drawn_cells: HashMap<CellIndex, UploadedCell>,
+    drawn_cells: HashMap<CellIndex, DeferredCell>,
 }
 
 impl App {
@@ -76,6 +81,7 @@ impl App {
             .filter(|c| !self.drawn_cells.contains_key(c))
             .collect_vec();
         if !cells_to_draw.is_empty() {
+            self.drawn_cells.extend(cells_to_draw.iter().copied().map(|c|(c, DeferredCell::Waiting)));
             // FIXME: concurrent drawing, should be fixed with a worker?
             spawn_local(async move {
                 let mut results = vec![];
@@ -86,7 +92,7 @@ impl App {
                 for cell in cells_to_draw {
                     let mut pixmap = Pixmap::new(256, 256).unwrap();
                     // pixmap.fill(Color::BLACK);
-                    draw_hex(cell, &mut pixmap);
+                    draw_hex(cell, &mut pixmap, 10.0);
                     let data = get_cell(&db, cell).await;
                     let bbox = cell_to_bounding_box(cell);
                     draw_tile(
@@ -111,6 +117,7 @@ impl App {
         self.drawn_cells.retain(|k, _v| cells.contains(k));
         debug!("Composing {} cells", self.drawn_cells.len());
         for (cell, data) in &self.drawn_cells {
+            let DeferredCell::Done(data) = data else {continue};
             let bounding_box = cell_to_bounding_box(*cell);
             let width_px =
                 (bounding_box.bottom_right.x - bounding_box.top_left.x) / self.mercator_scale;
@@ -304,7 +311,7 @@ impl Component for App {
             }
             Msg::Rendered(cells) => {
                 self.drawn_cells
-                    .extend(cells.into_iter().map(|c| (c.cell, c)));
+                    .extend(cells.into_iter().map(|c| (c.cell, DeferredCell::Done(c))));
                 recompose.emit(());
             }
             Msg::PanStart(pan_event) => {
