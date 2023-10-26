@@ -13,13 +13,10 @@ use std::{
     process::exit,
     time::Instant,
 };
+
 use tokio::runtime::Runtime;
-use zana::{
-    coords::GeoCoord,
-    draw_tile,
-    h3o::{CellIndex, LatLng, Resolution},
-    read_zana_data, StringTable, ZanaNode, ZanaPath, write_zana_data,
-};
+use zana::{coords::GeoCoord, draw_tile, h3o::{CellIndex, LatLng, Resolution}, read_zana_data, StringTable, ZanaNode, ZanaPath, write_zana_data, PicMercatorBoundingBox};
+use zana::coords::PicMercator;
 
 fn main() {
     env_logger::init();
@@ -65,8 +62,10 @@ fn main() {
             draw_tile(
                 &mut pixmap,
                 &mut BufReader::new(File::open(&path).unwrap()),
-                (x, x + scale, y, y + scale),
-            );
+                PicMercatorBoundingBox {
+                    top_left: PicMercator { x, y },
+                    bottom_right: PicMercator { x: x + scale, y: y + scale }
+                });
         }
         pixmap.save_png(&format!("all.png")).unwrap();
     }
